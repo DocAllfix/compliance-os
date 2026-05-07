@@ -1,0 +1,82 @@
+# =============================================================================
+# ComplianceOS — .gitignore
+# =============================================================================
+
+# --- Secrets / credenziali reali ---
+.env
+.env.*
+!.env.example
+backend/.env
+backend/.env.*
+!backend/.env.example
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+
+# --- Dati sensibili / runtime ---
+backend/config/users.json
+backend/config/sessions.json
+backend/data/*.db
+backend/data/*.db-journal
+backend/data/*.db-shm
+backend/data/*.db-wal
+
+# --- Binari / output (non committare) ---
+*.zip
+*.docx
+*.pdf
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv/
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# --- Node / Frontend ---
+node_modules/
+dist/
+dist_deploy.zip
+build/
+.vite/
+*.local
+.DS_Store
+
+# --- IDE / Editor ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.antigravity/
+
+# --- Log / temporanei ---
+*.log
+logs/
+temp/
+tmp/
+*.tmp
+
+# --- OS ---
+Thumbs.db
+desktop.ini
+
+# --- Output test locali (mai committare: contengono dati cliente reali) ---
+testimplementazioni/
+filetestazienda/
+testlocalresults/
+
+# --- Backup / snapshot ---
+*.bak
+*.backup
+*_backup.*

@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "powershell",
+            "statusMessage": "Loading ComplianceOS project context...",
+            "command": "$claude = Get-Content 'c:\\Users\\user\\COMPLIANCE-OS\\CLAUDE.md' -Raw -Encoding UTF8; $kazoo = Get-Content 'c:\\Users\\user\\COMPLIANCE-OS\\ti-ho-messo-una-steady-kazoo.md' -Raw -Encoding UTF8; $ctx = \"=== CLAUDE.md ===`n$claude`n`n=== ti-ho-messo-una-steady-kazoo.md ===`n$kazoo\"; [System.Console]::OutputEncoding = [System.Text.Encoding]::UTF8; @{ hookSpecificOutput = @{ hookEventName = 'SessionStart'; additionalContext = $ctx } } | ConvertTo-Json -Depth 5 -Compress"
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "powershell",
+            "statusMessage": "Reloading ComplianceOS project context after compaction...",
+            "command": "$claude = Get-Content 'c:\\Users\\user\\COMPLIANCE-OS\\CLAUDE.md' -Raw -Encoding UTF8; $kazoo = Get-Content 'c:\\Users\\user\\COMPLIANCE-OS\\ti-ho-messo-una-steady-kazoo.md' -Raw -Encoding UTF8; $ctx = \"=== CLAUDE.md ===`n$claude`n`n=== ti-ho-messo-una-steady-kazoo.md ===`n$kazoo`n`nNOTE: Context was just compacted. Re-read both files above and re-confirm your working rules.\"; [System.Console]::OutputEncoding = [System.Text.Encoding]::UTF8; @{ hookSpecificOutput = @{ hookEventName = 'PostCompact'; additionalContext = $ctx } } | ConvertTo-Json -Depth 5 -Compress"
+          }
+        ]
+      }
+    ]
+  }
+}
