@@ -5,7 +5,7 @@ import { api } from '@/api/apiClient';
 import { useAuth } from '@/lib/AuthContext';
 import { motion } from 'framer-motion';
 import { format } from 'date-fns';
-import { it } from 'date-fns/locale';
+import { enGB } from 'date-fns/locale';
 import { AlertTriangle, CheckCircle2, Eye, Lock } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -45,10 +45,10 @@ export default function AdminErrorLog() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['error-logs'] });
       queryClient.invalidateQueries({ queryKey: ['unresolved-errors-count'] });
-      toast.success('Errore segnato come risolto');
+      toast.success('Error marked as resolved');
       setSelectedError(null);
     },
-    onError: (err) => toast.error(err.message || 'Errore durante la risoluzione'),
+    onError: (err) => toast.error(err.message || 'Failed to resolve error'),
   });
 
   if (user && user.role !== 'admin') {
@@ -57,8 +57,8 @@ export default function AdminErrorLog() {
         <div className="p-4 rounded-2xl bg-muted/50 mb-4">
           <Lock className="w-12 h-12 text-muted-foreground/50" />
         </div>
-        <h3 className="text-lg font-semibold">Accesso Riservato</h3>
-        <p className="text-sm text-muted-foreground mt-1">Questa sezione è riservata agli amministratori.</p>
+        <h3 className="text-lg font-semibold">Access Restricted</h3>
+        <p className="text-sm text-muted-foreground mt-1">This section is available to administrators only.</p>
       </div>
     );
   }
@@ -74,22 +74,22 @@ export default function AdminErrorLog() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-          <AlertTriangle className="w-6 h-6 text-warning" /> Log Errori
+          <AlertTriangle className="w-6 h-6 text-warning" /> Error Log
         </h1>
         <div className="flex items-center gap-3 mt-2">
           {unresolvedCount > 0 && (
-            <Badge variant="destructive" className="text-xs">🔴 {unresolvedCount} non risolti</Badge>
+            <Badge variant="destructive" className="text-xs">{unresolvedCount} unresolved</Badge>
           )}
-          <span className="text-xs text-muted-foreground">Totale: {errors.length}</span>
+          <span className="text-xs text-muted-foreground">Total: {errors.length}</span>
         </div>
       </div>
 
       {/* Filtri */}
       <div className="flex gap-2">
         {[
-          { value: 'all',        label: 'Tutti' },
-          { value: 'unresolved', label: 'Non risolti' },
-          { value: 'recovered',  label: 'Auto-recuperati' },
+          { value: 'all',        label: 'All' },
+          { value: 'unresolved', label: 'Unresolved' },
+          { value: 'recovered',  label: 'Auto-recovered' },
         ].map(f => (
           <Button
             key={f.value}
@@ -104,27 +104,27 @@ export default function AdminErrorLog() {
       </div>
 
       {filtered.length === 0 ? (
-        <EmptyState icon={CheckCircle2} title="Tutto ok!" description="Nessun errore da mostrare." />
+        <EmptyState icon={CheckCircle2} title="All clear" description="No errors to display." />
       ) : (
         <div className="rounded-lg border border-border overflow-hidden">
           <Table>
             <TableHeader>
               <TableRow className="bg-muted/30 hover:bg-muted/30">
                 <TableHead className="text-xs">Data</TableHead>
-                <TableHead className="text-xs">Utente</TableHead>
+                <TableHead className="text-xs">User</TableHead>
                 <TableHead className="text-xs">Tab</TableHead>
-                <TableHead className="text-xs">Tipo</TableHead>
-                <TableHead className="text-xs">Azienda</TableHead>
+                <TableHead className="text-xs">Type</TableHead>
+                <TableHead className="text-xs">Company</TableHead>
                 <TableHead className="text-xs">Auto-rec</TableHead>
-                <TableHead className="text-xs">Stato</TableHead>
-                <TableHead className="text-xs">Azioni</TableHead>
+                <TableHead className="text-xs">Status</TableHead>
+                <TableHead className="text-xs">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {filtered.map((err) => (
                 <TableRow key={err.id} className="hover:bg-muted/20 transition-colors">
                   <TableCell className="text-xs text-muted-foreground">
-                    {err.created_date ? format(new Date(err.created_date), 'dd/MM HH:mm', { locale: it }) : '—'}
+                    {err.created_date ? format(new Date(err.created_date), 'dd/MM HH:mm', { locale: enGB }) : '—'}
                   </TableCell>
                   <TableCell className="text-xs">{err.created_by?.split('@')[0] || '—'}</TableCell>
                   <TableCell className="text-xs font-mono">{err.tab || '—'}</TableCell>
@@ -136,14 +136,14 @@ export default function AdminErrorLog() {
                   <TableCell className="text-xs">{err.company_name || '—'}</TableCell>
                   <TableCell className="text-xs">
                     {err.auto_recovered
-                      ? <span className="text-success">✅ Sì</span>
-                      : <span className="text-destructive">❌ No</span>
+                      ? <span className="text-success">Yes</span>
+                      : <span className="text-destructive">No</span>
                     }
                   </TableCell>
                   <TableCell>
                     {err.resolved
-                      ? <Badge variant="outline" className="bg-success/10 text-success border-success/30 text-[10px]">Risolto</Badge>
-                      : <Badge variant="outline" className="bg-destructive/10 text-destructive border-destructive/30 text-[10px]">Aperto</Badge>
+                      ? <Badge variant="outline" className="bg-success/10 text-success border-success/30 text-[10px]">Resolved</Badge>
+                      : <Badge variant="outline" className="bg-destructive/10 text-destructive border-destructive/30 text-[10px]">Open</Badge>
                     }
                   </TableCell>
                   <TableCell>
@@ -173,16 +173,16 @@ export default function AdminErrorLog() {
       <Sheet open={!!selectedError} onOpenChange={(open) => !open && setSelectedError(null)}>
         <SheetContent className="w-[440px] sm:max-w-[440px]">
           <SheetHeader>
-            <SheetTitle className="text-sm">Dettaglio Errore</SheetTitle>
+            <SheetTitle className="text-sm">Error Detail</SheetTitle>
           </SheetHeader>
           {selectedError && (
             <div className="mt-4 space-y-4">
               <div className="grid grid-cols-2 gap-3 text-xs">
-                <div><p className="text-muted-foreground">Utente</p><p className="font-medium">{selectedError.created_by || '—'}</p></div>
+                <div><p className="text-muted-foreground">User</p><p className="font-medium">{selectedError.created_by || '—'}</p></div>
                 <div><p className="text-muted-foreground">Tab</p><p className="font-medium font-mono">{selectedError.tab}</p></div>
-                <div><p className="text-muted-foreground">Azienda</p><p className="font-medium">{selectedError.company_name || '—'}</p></div>
+                <div><p className="text-muted-foreground">Company</p><p className="font-medium">{selectedError.company_name || '—'}</p></div>
                 <div>
-                  <p className="text-muted-foreground">Tipo</p>
+                  <p className="text-muted-foreground">Type</p>
                   <Badge variant="outline" className={`text-[10px] ${errorTypeColors[selectedError.error_type] || ''}`}>
                     {selectedError.error_type}
                   </Badge>
@@ -190,7 +190,7 @@ export default function AdminErrorLog() {
               </div>
 
               <div>
-                <p className="text-xs text-muted-foreground mb-1">Messaggio</p>
+                <p className="text-xs text-muted-foreground mb-1">Message</p>
                 <p className="text-sm p-3 rounded-md bg-muted/30 border">{selectedError.message}</p>
               </div>
 
@@ -211,7 +211,7 @@ export default function AdminErrorLog() {
 
               {selectedError.auto_recovered && (
                 <div className="p-3 rounded-md bg-success/5 border border-success/20">
-                  <p className="text-xs text-success font-medium">✅ Auto-recuperato</p>
+                  <p className="text-xs text-success font-medium">Auto-recovered</p>
                 </div>
               )}
 
@@ -221,7 +221,7 @@ export default function AdminErrorLog() {
                   onClick={() => resolveMutation.mutate(selectedError.id)}
                   disabled={resolveMutation.isPending}
                 >
-                  <CheckCircle2 className="w-4 h-4 mr-2" /> Segna come Risolto
+                  <CheckCircle2 className="w-4 h-4 mr-2" /> Mark as Resolved
                 </Button>
               )}
             </div>

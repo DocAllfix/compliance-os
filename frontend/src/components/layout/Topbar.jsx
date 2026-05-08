@@ -13,14 +13,11 @@ import { useWorkflowStore } from '@/store/workflowStore';
 import { ScrollArea } from '@/components/ui/scroll-area';
 
 const breadcrumbMap = {
-  '/dashboard': 'Dashboard',
-  '/workflow/report':   'Genera Report',
-  '/workflow/produce':  'Produci Checklist',
-  '/workflow/compile':  'Compila Checklist',
-  '/pratiche': 'Storico Pratiche',
-  '/admin': 'Pannello Admin',
-  '/admin/errori': 'Log Errori',
-  '/supporto': 'FAQ & Assistenza',
+  '/dashboard':    'Dashboard',
+  '/new-analysis': 'New Analysis',
+  '/history':      'Analysis History',
+  '/admin':        'Admin Panel',
+  '/admin/errori': 'Error Log',
 };
 
 const notifIcon = {
@@ -35,33 +32,38 @@ function formatTime(iso) {
     const d = new Date(iso);
     const now = new Date();
     const diff = Math.floor((now - d) / 1000);
-    if (diff < 60)  return 'adesso';
-    if (diff < 3600) return `${Math.floor(diff / 60)} min fa`;
-    if (diff < 86400) return `${Math.floor(diff / 3600)} h fa`;
-    return d.toLocaleDateString('it-IT', { day: '2-digit', month: '2-digit' });
+    if (diff < 60)   return 'just now';
+    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+    return d.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit' });
   } catch { return ''; }
 }
 
 export default function Topbar({ user, onLogout, errorCount = 0 }) {
   const location = useLocation();
-  const currentPage = breadcrumbMap[location.pathname] || 'Pagina';
+  const analysisMatch = location.pathname.match(/^\/analysis\/(.+)$/);
+  const currentPage = analysisMatch
+    ? 'Analysis Detail'
+    : (breadcrumbMap[location.pathname] || 'ComplianceOS');
   const initials = user?.full_name ? user.full_name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) : 'U';
   const { theme, toggle } = useTheme();
   const { notifications, unreadCount, markAllRead, clearNotifications } = useWorkflowStore();
 
   return (
-    <header className="h-16 sticky top-0 z-50 bg-card/95 backdrop-blur-xl border-b border-border flex items-center justify-between px-6">
+    <header className="h-16 sticky top-0 z-50 bg-card border-b border-border flex items-center justify-between px-6">
       {/* Breadcrumb */}
-      <div className="flex items-center gap-2 text-sm">
-        <span className="text-muted-foreground">AUDIT-OS</span>
-        <ChevronRight className="w-3 h-3 text-muted-foreground/50" />
-        <span className="font-medium text-foreground">{currentPage}</span>
-      </div>
+      <nav aria-label="Breadcrumb">
+        <ol className="flex items-center gap-2 text-sm list-none p-0 m-0">
+          <li><span className="text-muted-foreground">ComplianceOS</span></li>
+          <li aria-hidden="true"><ChevronRight className="w-3 h-3 text-muted-foreground/50" /></li>
+          <li><span className="font-medium text-foreground" aria-current="page">{currentPage}</span></li>
+        </ol>
+      </nav>
 
       {/* Right actions */}
       <div className="flex items-center gap-2">
         {/* Theme toggle */}
-        <Button variant="ghost" size="icon" onClick={toggle} className="text-muted-foreground hover:text-foreground" title={theme === 'dark' ? 'Passa a tema chiaro' : 'Passa a tema scuro'}>
+        <Button variant="ghost" size="icon" onClick={toggle} className="text-muted-foreground hover:text-foreground" title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}>
           {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
         </Button>
 
@@ -71,7 +73,7 @@ export default function Topbar({ user, onLogout, errorCount = 0 }) {
             <Button variant="ghost" size="icon" className="relative text-muted-foreground hover:text-foreground">
               <Bell className="w-4 h-4" />
               {unreadCount > 0 && (
-                <span className="absolute -top-0.5 -right-0.5 w-4 h-4 rounded-full bg-destructive text-[10px] font-bold text-white flex items-center justify-center">
+                <span className="absolute -top-0.5 -right-0.5 w-4 h-4 rounded-full bg-destructive text-[11px] font-bold text-white flex items-center justify-center">
                   {unreadCount > 9 ? '9+' : unreadCount}
                 </span>
               )}
@@ -80,10 +82,10 @@ export default function Topbar({ user, onLogout, errorCount = 0 }) {
           <DropdownMenuContent align="end" className="w-80 p-0">
             {/* Header */}
             <div className="flex items-center justify-between px-3 py-2 border-b">
-              <span className="text-xs font-semibold">Notifiche</span>
+              <span className="text-xs font-semibold">Notifications</span>
               <div className="flex items-center gap-1">
                 {notifications.length > 0 && (
-                  <Button variant="ghost" size="icon" className="h-6 w-6" title="Cancella tutto"
+                  <Button variant="ghost" size="icon" className="h-6 w-6" aria-label="Clear all notifications"
                     onClick={(e) => { e.stopPropagation(); clearNotifications(); }}>
                     <Trash2 className="w-3 h-3" />
                   </Button>
@@ -93,7 +95,7 @@ export default function Topbar({ user, onLogout, errorCount = 0 }) {
             {/* Lista notifiche */}
             {notifications.length === 0 ? (
               <div className="px-4 py-8 text-center text-xs text-muted-foreground">
-                Nessuna notifica
+                No notifications
               </div>
             ) : (
               <ScrollArea className="max-h-80">
@@ -104,7 +106,7 @@ export default function Topbar({ user, onLogout, errorCount = 0 }) {
                       <p className="text-xs font-semibold leading-snug truncate">{n.title}</p>
                       {n.body && <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug line-clamp-2">{n.body}</p>}
                     </div>
-                    <span className="text-[10px] text-muted-foreground shrink-0 mt-0.5">{formatTime(n.time)}</span>
+                    <span className="text-[11px] text-muted-foreground shrink-0 mt-0.5">{formatTime(n.time)}</span>
                   </div>
                 ))}
               </ScrollArea>
@@ -121,21 +123,21 @@ export default function Topbar({ user, onLogout, errorCount = 0 }) {
                   {initials}
                 </AvatarFallback>
               </Avatar>
-              <span className="text-sm font-medium hidden sm:inline">{user?.full_name || 'Utente'}</span>
+              <span className="text-sm font-medium hidden sm:inline">{user?.full_name || 'User'}</span>
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-48">
             <div className="px-3 py-2">
               <p className="text-sm font-medium">{user?.full_name}</p>
               <p className="text-xs text-muted-foreground">{user?.email}</p>
-              <Badge variant="outline" className="mt-1 text-[10px]">
+              <Badge variant="outline" className="mt-1 text-[11px]">
                 {user?.role || 'user'}
               </Badge>
             </div>
             <DropdownMenuSeparator />
             <DropdownMenuItem onClick={onLogout} className="text-destructive focus:text-destructive">
               <LogOut className="w-4 h-4 mr-2" />
-              Esci
+              Sign out
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

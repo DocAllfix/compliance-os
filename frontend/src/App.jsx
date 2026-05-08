@@ -10,18 +10,15 @@ import { ThemeProvider } from '@/lib/ThemeContext';
 
 // Layout
 import AppLayout from '@/components/layout/AppLayout';
-import WorkflowLayout from '@/components/layout/WorkflowLayout';
 
 // Pages
 import Login from '@/pages/Login';
-import Dashboard from '@/pages/Dashboard';
-import GeneraReport from '@/pages/GeneraReport';
-import ProduciChecklist from '@/pages/ProduciChecklist';
-import CompilaChecklist from '@/pages/CompilaChecklist';
-import StoricoPratiche from '@/pages/StoricoPratiche';
 import AdminPanel from '@/pages/AdminPanel';
 import AdminErrorLog from '@/pages/AdminErrorLog';
-import Supporto from '@/pages/Supporto';
+import ComplianceDashboard from '@/pages/ComplianceDashboard';
+import NewAnalysis from '@/pages/NewAnalysis';
+import AnalysisDetail from '@/pages/AnalysisDetail';
+import AnalysisHistory from '@/pages/AnalysisHistory';
 
 const AppRoutes = () => {
   const { user, isLoading } = useAuth();
@@ -31,9 +28,9 @@ const AppRoutes = () => {
       <div className="fixed inset-0 flex items-center justify-center bg-background">
         <div className="flex flex-col items-center gap-3">
           <div className="w-10 h-10 rounded-lg brand-gradient flex items-center justify-center">
-            <span className="text-white font-bold text-lg">A</span>
+            <span className="text-white font-bold text-lg">C</span>
           </div>
-          <div className="w-8 h-8 border-2 border-muted border-t-primary rounded-full animate-spin"></div>
+          <div className="w-8 h-8 border-2 border-muted border-t-primary rounded-full animate-spin" />
         </div>
       </div>
     );
@@ -51,20 +48,13 @@ const AppRoutes = () => {
     <Routes>
       <Route element={<AppLayout />}>
         <Route index element={<Navigate to="/dashboard" replace />} />
-        <Route path="dashboard" element={<Dashboard />} />
-
-        <Route path="workflow" element={<WorkflowLayout />}>
-          <Route index element={<Navigate to="/workflow/report" replace />} />
-          <Route path="report"   element={<GeneraReport />} />
-          <Route path="produce"  element={<ProduciChecklist />} />
-          <Route path="compile"  element={<CompilaChecklist />} />
-        </Route>
-
-        <Route path="pratiche" element={<StoricoPratiche />} />
-        <Route path="admin" element={<AdminPanel />} />
-        <Route path="admin/errori" element={<AdminErrorLog />} />
-        <Route path="supporto" element={<Supporto />} />
-        <Route path="*" element={<PageNotFound />} />
+        <Route path="dashboard"       element={<ComplianceDashboard />} />
+        <Route path="new-analysis"    element={<NewAnalysis />} />
+        <Route path="analysis/:id"    element={<AnalysisDetail />} />
+        <Route path="history"         element={<AnalysisHistory />} />
+        <Route path="admin"           element={<AdminPanel />} />
+        <Route path="admin/errori"    element={<AdminErrorLog />} />
+        <Route path="*"               element={<PageNotFound />} />
       </Route>
     </Routes>
   );

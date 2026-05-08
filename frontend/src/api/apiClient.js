@@ -1,14 +1,14 @@
 // @ts-nocheck
 // ==============================================================================
-// AUDIT-OS API CLIENT
-// Fetch-based client per il backend Python (FastAPI).
-// Base URL configurabile via VITE_API_BASE_URL (default: http://localhost:8000)
+// COMPLIANCE-OS API CLIENT
+// Fetch-based client for the Python backend (FastAPI).
+// Base URL configurable via VITE_API_BASE_URL (default: http://localhost:8000)
 // ==============================================================================
 
 const BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000').replace(/\/$/, '');
 
 function getToken() {
-  return localStorage.getItem('audit-os-token');
+  return localStorage.getItem('compliance-os-token');
 }
 
 async function request(method, path, body = undefined, extraHeaders = {}) {
@@ -29,7 +29,7 @@ async function request(method, path, body = undefined, extraHeaders = {}) {
   });
 
   if (res.status === 401) {
-    localStorage.removeItem('audit-os-token');
+    localStorage.removeItem('compliance-os-token');
     window.location.href = '/login';
     return;
   }
@@ -39,7 +39,7 @@ async function request(method, path, body = undefined, extraHeaders = {}) {
   const data = await res.json().catch(() => null);
 
   if (!res.ok) {
-    throw new Error(data?.detail || data?.message || `Errore ${res.status}`);
+    throw new Error(data?.detail || data?.message || `Error ${res.status}`);
   }
 
   return data;
@@ -213,4 +213,30 @@ const checklist = {
   },
 };
 
-export const api = { auth, pratiche, errors, admin, report, checklist };
+// ==============================================================================
+// COMPLIANCE — GAP ANALYSIS
+// ==============================================================================
+const compliance = {
+  /**
+   * GET /api/compliance/analyses?limit=N
+   * → [{ id, company, norms, sector, overall_score, major_count, analysis_date, status }]
+   */
+  list: (limit = 50) =>
+    request('GET', `/api/compliance/analyses?limit=${limit}`),
+
+  /**
+   * GET /api/compliance/analyses/{id}
+   * → full analysis row including result_json
+   */
+  get: (id) =>
+    request('GET', `/api/compliance/analyses/${id}`),
+
+  /**
+   * PATCH /api/compliance/analyses/{analysisId}/actions/{clauseId}
+   * Body: { status: 'open'|'in_progress'|'closed', notes: string }
+   */
+  updateAction: (analysisId, clauseId, status, notes = '') =>
+    request('PATCH', `/api/compliance/analyses/${analysisId}/actions/${clauseId}`, { status, notes }),
+};
+
+export const api = { auth, pratiche, errors, admin, report, checklist, compliance };

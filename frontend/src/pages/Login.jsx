@@ -1,3 +1,4 @@
+// @ts-nocheck
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
 import { Eye, EyeOff, LogIn, AlertCircle } from 'lucide-react';
@@ -22,7 +23,7 @@ export default function Login() {
     try {
       await login(username.trim(), password);
     } catch (err) {
-      setError(err.message || 'Credenziali non valide');
+      setError(err.message || 'Invalid credentials. Please try again.');
     } finally {
       setIsLoading(false);
     }
@@ -44,17 +45,17 @@ export default function Login() {
         {/* Logo */}
         <div className="flex flex-col items-center mb-8">
           <div className="w-12 h-12 rounded-xl brand-gradient flex items-center justify-center mb-3 shadow-lg">
-            <span className="text-white font-bold text-xl">A</span>
+            <span className="text-white font-bold text-xl">C</span>
           </div>
-          <h1 className="font-mono font-bold text-primary text-xl tracking-wider">AUDIT-OS</h1>
-          <p className="text-xs text-muted-foreground mt-1">Piattaforma di Audit di Terza Parte</p>
+          <h1 className="font-mono font-bold text-primary text-xl tracking-wider">ComplianceOS</h1>
+          <p className="text-xs text-muted-foreground mt-1">ISO Gap Analysis Platform</p>
         </div>
 
         {/* Card */}
         <div className="glass rounded-xl border p-6 space-y-5">
           <div>
-            <h2 className="text-sm font-semibold">Accesso</h2>
-            <p className="text-xs text-muted-foreground mt-0.5">Inserisci le tue credenziali per continuare</p>
+            <h2 className="text-sm font-semibold">Sign in</h2>
+            <p className="text-xs text-muted-foreground mt-0.5">Enter your credentials to continue</p>
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -65,7 +66,7 @@ export default function Login() {
                 type="text"
                 value={username}
                 onChange={e => setUsername(e.target.value)}
-                placeholder="es. mario.rossi"
+                placeholder="e.g. j.smith"
                 autoComplete="off"
                 autoFocus
                 disabled={isLoading}
@@ -117,7 +118,7 @@ export default function Login() {
                 <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
               ) : (
                 <>
-                  <LogIn className="w-4 h-4 mr-2" /> Accedi
+                  <LogIn className="w-4 h-4 mr-2" /> Sign in
                 </>
               )}
             </Button>
@@ -125,7 +126,7 @@ export default function Login() {
         </div>
 
         <p className="text-center text-xs text-muted-foreground/50 mt-6">
-          AUDIT-OS &copy; {new Date().getFullYear()} — Accesso riservato
+          ComplianceOS &copy; {new Date().getFullYear()} — Authorised access only
         </p>
       </motion.div>
     </div>

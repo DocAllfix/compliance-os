@@ -7,7 +7,7 @@ import {
 import { jsPDF } from 'jspdf';
 import * as XLSX from 'xlsx';
 import { format } from 'date-fns';
-import { it } from 'date-fns/locale';
+import { enGB } from 'date-fns/locale';
 
 // Export a single practice — just download its file_url if available
 // or generate a PDF summary card
@@ -19,23 +19,23 @@ async function exportSinglePDF(practice) {
 
   const doc = new jsPDF();
   doc.setFontSize(20);
-  doc.text('Dettaglio Pratica', 20, 20);
+  doc.text('Analysis Detail', 20, 20);
   doc.setFontSize(11);
   doc.setTextColor(100);
-  doc.text(`Generato il: ${format(new Date(), 'dd/MM/yyyy HH:mm', { locale: it })}`, 20, 30);
+  doc.text(`Generated: ${format(new Date(), 'dd/MM/yyyy HH:mm', { locale: enGB })}`, 20, 30);
 
   doc.setDrawColor(180);
   doc.line(20, 34, 190, 34);
 
   const rows = [
-    ['Azienda', practice.company_name || '—'],
-    ['Tipo', practice.type || '—'],
-    ['Norma', practice.norm || '—'],
-    ['Stato', practice.status || '—'],
-    ['Data creazione', practice.created_date ? format(new Date(practice.created_date), 'dd/MM/yyyy HH:mm', { locale: it }) : '—'],
-    ['Tempo elaborazione', practice.processing_time_seconds ? `${practice.processing_time_seconds}s` : '—'],
-    ['Clausole totali', practice.clauses_total ?? '—'],
-    ['Clausole complete', practice.clauses_complete ?? '—'],
+    ['Company', practice.company_name || '—'],
+    ['Type', practice.type || '—'],
+    ['Standard', practice.norm || '—'],
+    ['Status', practice.status || '—'],
+    ['Date', practice.created_date ? format(new Date(practice.created_date), 'dd/MM/yyyy HH:mm', { locale: enGB }) : '—'],
+    ['Processing time', practice.processing_time_seconds ? `${practice.processing_time_seconds}s` : '—'],
+    ['Total clauses', practice.clauses_total ?? '—'],
+    ['Complete clauses', practice.clauses_complete ?? '—'],
   ];
 
   let y = 44;
@@ -51,28 +51,28 @@ async function exportSinglePDF(practice) {
   if (practice.error_message) {
     y += 4;
     doc.setTextColor(200, 50, 50);
-    doc.text('Errore:', 20, y);
+    doc.text('Error:', 20, y);
     doc.setTextColor(0);
     doc.setFont(undefined, 'normal');
     const lines = doc.splitTextToSize(practice.error_message, 120);
     doc.text(lines, 75, y);
   }
 
-  doc.save(`pratica_${practice.company_name?.replace(/\s+/g, '_') || practice.id}.pdf`);
+  doc.save(`analysis_${practice.company_name?.replace(/\s+/g, '_') || practice.id}.pdf`);
 }
 
 function exportListPDF(practices) {
   const doc = new jsPDF({ orientation: 'landscape' });
   doc.setFontSize(16);
-  doc.text('Storico Pratiche', 14, 16);
+  doc.text('Analysis History', 14, 16);
   doc.setFontSize(9);
   doc.setTextColor(120);
-  doc.text(`Esportato il: ${format(new Date(), 'dd/MM/yyyy HH:mm', { locale: it })} — ${practices.length} pratiche`, 14, 22);
+  doc.text(`Exported: ${format(new Date(), 'dd/MM/yyyy HH:mm', { locale: enGB })} — ${practices.length} record${practices.length !== 1 ? 's' : ''}`, 14, 22);
 
   doc.setTextColor(0);
   doc.setFontSize(9);
 
-  const headers = ['#', 'Azienda', 'Tipo', 'Norma', 'Stato', 'Data', 'Tempo (s)', 'Clausole'];
+  const headers = ['#', 'Company', 'Type', 'Standard', 'Status', 'Date', 'Time (s)', 'Clauses'];
   const colX =     [14,   30,        80,     120,    150,    175,    220,          248];
 
   // Header row
@@ -92,7 +92,7 @@ function exportListPDF(practices) {
       p.type || '—',
       p.norm || '—',
       p.status || '—',
-      p.created_date ? format(new Date(p.created_date), 'dd/MM/yy', { locale: it }) : '—',
+      p.created_date ? format(new Date(p.created_date), 'dd/MM/yy', { locale: enGB }) : '—',
       p.processing_time_seconds ? String(p.processing_time_seconds) : '—',
       p.clauses_total ? `${p.clauses_complete ?? 0}/${p.clauses_total}` : '—',
     ];
@@ -103,28 +103,28 @@ function exportListPDF(practices) {
     y += 7;
   });
 
-  doc.save(`storico_pratiche_${format(new Date(), 'yyyyMMdd')}.pdf`);
+  doc.save(`analysis_history_${format(new Date(), 'yyyyMMdd')}.pdf`);
 }
 
 function exportListExcel(practices) {
   const rows = practices.map((p, i) => ({
     '#': i + 1,
-    'Azienda': p.company_name || '',
-    'Tipo': p.type || '',
-    'Norma': p.norm || '',
-    'Stato': p.status || '',
-    'Data creazione': p.created_date ? format(new Date(p.created_date), 'dd/MM/yyyy HH:mm', { locale: it }) : '',
-    'Tempo (s)': p.processing_time_seconds || '',
-    'Clausole totali': p.clauses_total || '',
-    'Clausole complete': p.clauses_complete || '',
-    'Errore': p.error_message || '',
+    'Company': p.company_name || '',
+    'Type': p.type || '',
+    'Standard': p.norm || '',
+    'Status': p.status || '',
+    'Date': p.created_date ? format(new Date(p.created_date), 'dd/MM/yyyy HH:mm', { locale: enGB }) : '',
+    'Time (s)': p.processing_time_seconds || '',
+    'Total Clauses': p.clauses_total || '',
+    'Complete Clauses': p.clauses_complete || '',
+    'Error': p.error_message || '',
     'File URL': p.file_url || '',
   }));
 
   const ws = XLSX.utils.json_to_sheet(rows);
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'Pratiche');
-  XLSX.writeFile(wb, `storico_pratiche_${format(new Date(), 'yyyyMMdd')}.xlsx`);
+  XLSX.utils.book_append_sheet(wb, ws, 'Analyses');
+  XLSX.writeFile(wb, `analysis_history_${format(new Date(), 'yyyyMMdd')}.xlsx`);
 }
 
 /**
@@ -137,14 +137,14 @@ export default function ExportMenu({ mode = 'list', practice = null, practices =
   if (mode === 'single') {
     return (
       <Button
-        variant="ghost" size="icon" className="h-7 w-7"
+        variant="ghost" size="icon" className="h-8 w-8"
         disabled={loading}
         onClick={async () => {
           setLoading(true);
           await exportSinglePDF(practice);
           setLoading(false);
         }}
-        title="Scarica pratica"
+        aria-label="Download analysis"
       >
         {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
       </Button>
@@ -156,21 +156,21 @@ export default function ExportMenu({ mode = 'list', practice = null, practices =
       <DropdownMenuTrigger asChild>
         <Button variant="outline" size="sm" className="gap-2" disabled={practices.length === 0}>
           <Download className="w-4 h-4" />
-          Esporta lista
+          Export list
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-48">
         <DropdownMenuLabel className="text-xs text-muted-foreground">
-          {practices.length} pratiche selezionate
+          {practices.length} record{practices.length !== 1 ? 's' : ''} selected
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
         <DropdownMenuItem onClick={() => exportListPDF(practices)} className="gap-2 cursor-pointer">
           <FileText className="w-4 h-4 text-destructive" />
-          Esporta PDF
+          Export PDF
         </DropdownMenuItem>
         <DropdownMenuItem onClick={() => exportListExcel(practices)} className="gap-2 cursor-pointer">
           <FileSpreadsheet className="w-4 h-4 text-success" />
-          Esporta Excel
+          Export Excel
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

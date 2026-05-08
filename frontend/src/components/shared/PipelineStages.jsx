@@ -64,7 +64,7 @@ export default function PipelineStages({ stages, currentStage, progress, message
             />
           </div>
           <div className="flex justify-between text-[10px] text-muted-foreground">
-            <span className="truncate max-w-[85%]">{message || 'Elaborazione in corso…'}</span>
+            <span className="truncate max-w-[85%]">{message || 'Processing…'}</span>
             <span className="font-mono shrink-0">{Math.round(progress)}%</span>
           </div>
         </div>

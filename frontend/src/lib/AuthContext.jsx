@@ -10,14 +10,14 @@ export const AuthProvider = ({ children }) => {
 
   // Verifica il token in localStorage all'avvio
   useEffect(() => {
-    const token = localStorage.getItem('audit-os-token');
+    const token = localStorage.getItem('compliance-os-token');
     if (!token) {
       setIsLoading(false);
       return;
     }
     api.auth.me()
       .then(setUser)
-      .catch(() => localStorage.removeItem('audit-os-token'))
+      .catch(() => localStorage.removeItem('compliance-os-token'))
       .finally(() => setIsLoading(false));
   }, []);
 
@@ -28,7 +28,7 @@ export const AuthProvider = ({ children }) => {
   const login = useCallback(async (username, password) => {
     const data = await api.auth.login(username, password);
     // Il backend risponde con { token, user: { email, role, full_name } }
-    localStorage.setItem('audit-os-token', data.token);
+    localStorage.setItem('compliance-os-token', data.token);
     setUser(data.user);
     return data;
   }, []);
@@ -42,7 +42,7 @@ export const AuthProvider = ({ children }) => {
     } catch {
       // ignora errori di rete — rimuoviamo il token comunque
     }
-    localStorage.removeItem('audit-os-token');
+    localStorage.removeItem('compliance-os-token');
     setUser(null);
   }, []);
 

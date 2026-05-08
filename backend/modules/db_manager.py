@@ -110,8 +110,157 @@ def init_database():
     conn.close()
 
 
+def init_compliance_tables():
+    """Inizializza le tabelle ComplianceOS (idempotente — CREATE IF NOT EXISTS)."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS compliance_analyses (
+            id TEXT PRIMARY KEY,
+            user_id TEXT,
+            company TEXT,
+            norms TEXT,
+            sector TEXT,
+            employee_range TEXT,
+            certified TEXT,
+            sites_count TEXT,
+            company_context_json TEXT,
+            analysis_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            overall_score INTEGER,
+            major_count INTEGER,
+            minor_count INTEGER,
+            observation_count INTEGER,
+            conformant_count INTEGER,
+            spof_count INTEGER,
+            documents_analyzed INTEGER,
+            result_json TEXT,
+            docx_filename TEXT,
+            status TEXT DEFAULT 'completed'
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS ncr_actions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            analysis_id TEXT REFERENCES compliance_analyses(id),
+            clause_id TEXT,
+            severity TEXT,
+            is_spof INTEGER DEFAULT 0,
+            status TEXT DEFAULT 'open',
+            notes TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS compliance_chat (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            analysis_id TEXT REFERENCES compliance_analyses(id),
+            role TEXT,
+            content TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_ca_user ON compliance_analyses(user_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_ca_date ON compliance_analyses(analysis_date DESC)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_ncr_analysis ON ncr_actions(analysis_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_analysis ON compliance_chat(analysis_id)")
+
+    conn.commit()
+    conn.close()
+
+
+# ==============================================================================
+# FUNZIONI COMPLIANCE ANALYSES
+# ==============================================================================
+
+def save_compliance_analysis(analysis_id: str, user_id: str, result_json_str: str,
+                              context_json_str: str, docx_filename: str = "") -> None:
+    """Salva il risultato di un'analisi compliance nel DB."""
+    import json as _json
+    ctx = _json.loads(context_json_str)
+    result = _json.loads(result_json_str)
+
+    major = sum(r.get("major_count", 0) for r in result.get("norms", []))
+    minor = sum(r.get("minor_count", 0) for r in result.get("norms", []))
+    obs   = sum(r.get("observation_count", 0) for r in result.get("norms", []))
+    conf  = sum(r.get("conformant_count", 0) for r in result.get("norms", []))
+    spof  = sum(r.get("spof_count", 0) for r in result.get("norms", []))
+    scores = [r.get("overall_score", 0) for r in result.get("norms", [])]
+    overall = int(sum(scores) / len(scores)) if scores else 0
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT OR REPLACE INTO compliance_analyses
+        (id, user_id, company, norms, sector, employee_range, certified, sites_count,
+         company_context_json, overall_score, major_count, minor_count, observation_count,
+         conformant_count, spof_count, documents_analyzed, result_json, docx_filename)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    """, (
+        analysis_id, user_id,
+        result.get("company", ""),
+        _json.dumps(ctx.get("norms", [])),
+        ctx.get("sector", ""), ctx.get("employee_range", ""),
+        ctx.get("certified", ""), ctx.get("sites_count", ""),
+        context_json_str, overall, major, minor, obs, conf, spof,
+        result.get("documents_analyzed", 0), result_json_str, docx_filename,
+    ))
+    conn.commit()
+    conn.close()
+
+
+def get_compliance_analyses(user_id: str, limit: int = 50) -> List[Dict]:
+    """Recupera lo storico analisi di un utente."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, company, norms, sector, employee_range, analysis_date,
+               overall_score, major_count, minor_count, observation_count,
+               conformant_count, spof_count, documents_analyzed, status, docx_filename
+        FROM compliance_analyses
+        WHERE user_id = ?
+        ORDER BY analysis_date DESC LIMIT ?
+    """, (user_id, limit))
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def get_compliance_analysis(analysis_id: str) -> Optional[Dict]:
+    """Recupera un'analisi completa per ID."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM compliance_analyses WHERE id = ?", (analysis_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def update_ncr_status(analysis_id: str, clause_id: str, status: str,
+                       notes: str = "") -> bool:
+    """Aggiorna lo status di un'azione NCR (open/in_progress/closed)."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO ncr_actions (analysis_id, clause_id, status, notes, updated_at)
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT DO NOTHING
+    """, (analysis_id, clause_id, status, notes))
+    cursor.execute("""
+        UPDATE ncr_actions SET status = ?, notes = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE analysis_id = ? AND clause_id = ?
+    """, (status, notes, analysis_id, clause_id))
+    conn.commit()
+    conn.close()
+    return True
+
+
 # Inizializza database all'import
 init_database()
+init_compliance_tables()
 
 
 # ==============================================================================

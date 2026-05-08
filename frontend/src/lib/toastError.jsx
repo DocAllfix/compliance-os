@@ -8,14 +8,14 @@
 import { toast } from 'sonner';
 
 export function toastError(message) {
-  const text = typeof message === 'string' ? message : String(message ?? 'Errore sconosciuto');
+  const text = typeof message === 'string' ? message : String(message ?? 'Unknown error');
   toast.error(text, {
     duration: 8000,
     action: {
-      label: 'Copia',
+      label: 'Copy',
       onClick: () => {
         navigator.clipboard.writeText(text).then(() => {
-          toast.success('Errore copiato negli appunti', { duration: 2000 });
+          toast.success('Error copied to clipboard', { duration: 2000 });
         });
       },
     },

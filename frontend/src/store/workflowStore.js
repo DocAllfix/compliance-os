@@ -12,7 +12,7 @@ const INITIAL_SESSION = {
 
 const loadSession = () => {
   try {
-    const raw = localStorage.getItem('audit-os-workflow');
+    const raw = localStorage.getItem('compliance-os-workflow');
     return raw ? JSON.parse(raw) : { ...INITIAL_SESSION };
   } catch {
     return { ...INITIAL_SESSION };
@@ -21,7 +21,7 @@ const loadSession = () => {
 
 const loadNotifications = () => {
   try {
-    const raw = localStorage.getItem('audit-os-notifications');
+    const raw = localStorage.getItem('compliance-os-notifications');
     return raw ? JSON.parse(raw) : [];
   } catch {
     return [];
@@ -29,11 +29,11 @@ const loadNotifications = () => {
 };
 
 const saveSession = (session) => {
-  try { localStorage.setItem('audit-os-workflow', JSON.stringify(session)); } catch {}
+  try { localStorage.setItem('compliance-os-workflow', JSON.stringify(session)); } catch {}
 };
 
 const saveNotifications = (notifications) => {
-  try { localStorage.setItem('audit-os-notifications', JSON.stringify(notifications.slice(0, 50))); } catch {}
+  try { localStorage.setItem('compliance-os-notifications', JSON.stringify(notifications.slice(0, 50))); } catch {}
 };
 
 export const useWorkflowStore = create((set, get) => ({

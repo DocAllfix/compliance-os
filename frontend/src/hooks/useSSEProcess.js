@@ -24,7 +24,7 @@ const BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000').
 const STALL_THRESHOLD_SEC = 5;
 
 function getToken() {
-  return localStorage.getItem('audit-os-token');
+  return localStorage.getItem('compliance-os-token');
 }
 
 function formatEta(seconds) {
@@ -103,14 +103,14 @@ export function useSSEProcess() {
       });
 
       if (response.status === 401) {
-        localStorage.removeItem('audit-os-token');
+        localStorage.removeItem('compliance-os-token');
         window.location.href = '/login';
         return;
       }
 
       if (!response.ok) {
         const data = await response.json().catch(() => null);
-        throw new Error(data?.detail || data?.message || `Errore ${response.status}`);
+        throw new Error(data?.detail || data?.message || `Error ${response.status}`);
       }
 
       // Legge lo stream SSE riga per riga

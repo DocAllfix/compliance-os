@@ -126,9 +126,9 @@ def _extract_report_text(file_bytes: bytes, filename: str):
 
 # ── App ────────────────────────────────────────────────────────────────────────
 app = FastAPI(
-    title="AUDIT-OS API",
-    version="1.0.0",
-    description="REST backend per il frontend React di AUDIT-OS",
+    title="ComplianceOS API",
+    version="0.1.0-mvp",
+    description="REST backend per ComplianceOS — Five Rise Consultancy",
 )
 
 app.add_middleware(
@@ -1101,16 +1101,215 @@ async def compile_checklist(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# COMPLIANCE — ANALYZE  (SSE streaming)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.post("/api/compliance/analyze")
+async def compliance_analyze(
+    file: UploadFile = File(...),
+    company_name: str = Form(...),
+    sector: str = Form(...),
+    employee_range: str = Form(...),
+    certified: str = Form(...),
+    sites_count: str = Form(...),
+    norms: str = Form(...),          # JSON array serializzato, es. '["ISO 9001","ISO 14001"]'
+    user: Dict = Depends(_get_current_user),
+):
+    """
+    Pipeline compliance completa (SSE).
+    Riceve ZIP documenti + CompanyContext come form fields.
+
+    Stream SSE:
+      data: {"pct": 10, "msg": "Reading documents..."}
+      data: {"pct": 45, "msg": "Indexing evidence..."}
+      data: {"pct": 80, "msg": "Analysing ISO 9001 conformance..."}
+      data: {"done": true, "analysis_id": "...", "result": {...}}
+      data: {"error": "..."}
+    """
+    from compliance.schemas import CompanyContext
+    from compliance.gap_analyzer import analyze_compliance
+    from modules.db_manager import save_compliance_analysis
+
+    file_bytes = await file.read()
+    username = user["username"]
+
+    try:
+        norms_list: List[str] = json.loads(norms)
+    except Exception:
+        norms_list = [norms]
+
+    context = CompanyContext(
+        company_name=company_name,
+        sector=sector,
+        employee_range=employee_range,
+        certified=certified,
+        sites_count=sites_count,
+        norms=norms_list,
+    )
+
+    loop = asyncio.get_event_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+
+    def _emit(pct: int, msg: str):
+        asyncio.run_coroutine_threadsafe(queue.put({"pct": pct, "msg": msg}), loop)
+
+    async def event_stream():
+        _emit(5, "Reading documents...")
+
+        def _run():
+            _emit(35, "Indexing evidence...")
+            for norm in norms_list:
+                _emit(50, f"Analysing {norm} conformance [{sector}, {employee_range} employees]...")
+            result = analyze_compliance(
+                evidence_yaml="",
+                company_context=context,
+                emitter=None,
+            )
+            _emit(90, "Preparing your compliance report...")
+            return result
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = loop.run_in_executor(pool, _run)
+
+            while not future.done():
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=0.3)
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+
+            while not queue.empty():
+                event = queue.get_nowait()
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+            try:
+                result = future.result()
+                result_dict = result.model_dump()
+                context_dict = context.model_dump()
+
+                try:
+                    save_compliance_analysis(
+                        analysis_id=result.analysis_id,
+                        user_id=username,
+                        result_json_str=json.dumps(result_dict),
+                        context_json_str=json.dumps(context_dict),
+                    )
+                except Exception as db_err:
+                    logger.warning(f"[Compliance] DB save failed (non-blocking): {db_err}")
+
+                done_event = {"done": True, "analysis_id": result.analysis_id, "result": result_dict}
+                yield f"data: {json.dumps(done_event, ensure_ascii=False)}\n\n"
+
+            except Exception as e:
+                logger.error(f"[Compliance] {e}\n{traceback.format_exc()}")
+                yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# COMPLIANCE — STORICO / DETTAGLIO / DOWNLOAD / ACTIONS
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/compliance/analyses")
+async def list_compliance_analyses(
+    limit: int = Query(50),
+    user: Dict = Depends(_get_current_user),
+):
+    """Storico analisi compliance dell'utente autenticato."""
+    from modules.db_manager import get_compliance_analyses
+    analyses = get_compliance_analyses(user["username"], limit=limit)
+    return analyses
+
+
+@app.get("/api/compliance/analyses/{analysis_id}")
+async def get_compliance_analysis_detail(
+    analysis_id: str,
+    user: Dict = Depends(_get_current_user),
+):
+    """Dettaglio completo di un'analisi (include result_json)."""
+    from modules.db_manager import get_compliance_analysis
+    import json as _json
+    row = get_compliance_analysis(analysis_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+    if row.get("result_json"):
+        try:
+            row["result"] = _json.loads(row["result_json"])
+        except Exception:
+            row["result"] = None
+    return row
+
+
+@app.get("/api/compliance/analyses/{analysis_id}/download")
+async def download_compliance_report(
+    analysis_id: str,
+    user: Dict = Depends(_get_current_user),
+):
+    """Genera e scarica il report DOCX per un'analisi compliance."""
+    import json as _json
+    from modules.db_manager import get_compliance_analysis
+    from compliance.report_builder import build_docx_report
+    from compliance.schemas import (
+        ComplianceAnalysisResult, CompanyContext, NormGapReport,
+        ClauseGap, TraceabilityLink, RemediationPlan,
+    )
+
+    row = get_compliance_analysis(analysis_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+
+    try:
+        result_data = _json.loads(row["result_json"]) if isinstance(row.get("result_json"), str) else row.get("result_json", {})
+        result = ComplianceAnalysisResult(**result_data)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not parse analysis result: {e}")
+
+    try:
+        docx_bytes = build_docx_report(result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Report generation failed: {e}")
+
+    safe_company = result.company.replace(" ", "_").replace("/", "-")[:30]
+    filename = f"ComplianceOS_GAP_Report_{safe_company}_{analysis_id[:8]}.docx"
+
+    return StreamingResponse(
+        iter([docx_bytes]),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.patch("/api/compliance/analyses/{analysis_id}/actions/{clause_id}")
+async def update_ncr_action(
+    analysis_id: str,
+    clause_id: str,
+    body: Dict = Body(...),
+    user: Dict = Depends(_get_current_user),
+):
+    """Aggiorna status NCR: open / in_progress / closed."""
+    from modules.db_manager import update_ncr_status
+    status = body.get("status", "open")
+    notes = body.get("notes", "")
+    if status not in ("open", "in_progress", "closed"):
+        raise HTTPException(status_code=422, detail="status must be open / in_progress / closed")
+    update_ncr_status(analysis_id, clause_id, status, notes)
+    return {"ok": True}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # MAIN
 # ══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     import uvicorn
     print("=" * 60)
-    print("  AUDIT-OS API SERVER")
-    print(f"  Gemini API Key: {'✓ configurata' if GEMINI_API_KEY else '✗ MANCANTE'}")
-    print(f"  Templates dir:  {TEMPLATES_DIR}")
-    print(f"  Norme:          {', '.join(SUPPORTED_NORMS)}")
+    print("  ComplianceOS API SERVER")
+    print(f"  Gemini API Key: {'✓ configured' if GEMINI_API_KEY else '✗ MISSING'}")
     print("=" * 60)
     uvicorn.run(
         "api_server:app",

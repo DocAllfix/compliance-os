@@ -33,8 +33,8 @@ export default function AdminPanel() {
         <div className="p-4 rounded-2xl bg-muted/50 mb-4">
           <Lock className="w-12 h-12 text-muted-foreground/50" />
         </div>
-        <h3 className="text-lg font-semibold">Accesso Riservato</h3>
-        <p className="text-sm text-muted-foreground mt-1">Questa sezione è riservata agli amministratori.</p>
+        <h3 className="text-lg font-semibold">Access Restricted</h3>
+        <p className="text-sm text-muted-foreground mt-1">This section is available to administrators only.</p>
       </div>
     );
   }
@@ -64,27 +64,27 @@ export default function AdminPanel() {
     <div className="space-y-8">
       <div>
         <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-          <Shield className="w-6 h-6 text-primary" /> Pannello Admin
+          <Shield className="w-6 h-6 text-primary" /> Admin Panel
         </h1>
-        <p className="text-sm text-muted-foreground mt-1">Statistiche globali e breakdown per utente</p>
+        <p className="text-sm text-muted-foreground mt-1">Global statistics and per-user breakdown</p>
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard label="Totale Sistema" value={totalPractices} icon={Globe} />
-        <StatCard label="Tempo Medio"    value={avgTime}         suffix="s" icon={Clock} />
-        <StatCard label="Tasso Successo" value={successRate}     suffix="%" icon={CheckCircle2} />
-        <StatCard label="Oggi"           value={todayCount}      icon={Calendar} />
+        <StatCard label="Total Analyses" value={totalPractices} icon={Globe} />
+        <StatCard label="Avg. Time"      value={avgTime}         suffix="s" icon={Clock} />
+        <StatCard label="Success Rate"   value={successRate}     suffix="%" icon={CheckCircle2} />
+        <StatCard label="Today"          value={todayCount}      icon={Calendar} />
       </div>
 
       <Card className="glass">
         <CardHeader>
           <CardTitle className="text-sm font-semibold flex items-center gap-2">
-            <BarChart3 className="w-4 h-4 text-primary" /> Pratiche per Utente
+            <BarChart3 className="w-4 h-4 text-primary" /> Analyses by User
           </CardTitle>
         </CardHeader>
         <CardContent>
           {userChartData.length === 0 ? (
-            <p className="text-sm text-muted-foreground text-center py-8">Nessun dato disponibile</p>
+            <p className="text-sm text-muted-foreground text-center py-8">No data available yet.</p>
           ) : (
             <ResponsiveContainer width="100%" height={250}>
               <BarChart data={userChartData} layout="vertical" margin={{ left: 20, right: 20 }}>

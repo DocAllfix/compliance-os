@@ -44,7 +44,7 @@ export default function FileDropzone({ accept, title, description, icon: IconPro
             <p className="text-sm font-medium truncate">{file.name}</p>
             <p className="text-xs text-muted-foreground">{formatSize(file.size)}</p>
           </div>
-          <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={onRemove}>
+          <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive" onClick={onRemove} aria-label="Remove file">
             <X className="w-4 h-4" />
           </Button>
         </div>

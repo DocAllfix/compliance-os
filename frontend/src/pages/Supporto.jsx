@@ -1,24 +1,25 @@
+// @ts-nocheck
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
-import { HelpCircle, Clock, AlertCircle, FileText, ListChecks, Wifi, Zap, FolderOpen, ClipboardCheck } from 'lucide-react';
+import { HelpCircle, Clock, AlertCircle, FolderOpen, ClipboardCheck } from 'lucide-react';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 
 const faqs = [
-  { q: 'Quanto tempo richiede l\'elaborazione?', a: 'L\'elaborazione dipende dal numero di documenti. In media: 30-90 secondi per uno ZIP di 20-50 file. ZIP più grandi possono richiedere fino a 3-5 minuti.' },
-  { q: 'Perché alcune clausole sono vuote?', a: 'L\'AI potrebbe non trovare evidenza nel report per alcune clausole. Usa la funzione "Recupera Clausole Mancanti" oppure compila manualmente dal drawer di dettaglio.' },
-  { q: 'Come correggo il nome azienda?', a: 'Nella tab "Produci Checklist", clicca sull\'icona di modifica accanto al nome azienda rilevato. La modifica si propaga al JSON e al filename.' },
-  { q: 'Posso elaborare più pratiche insieme?', a: 'Attualmente il sistema elabora una pratica alla volta. Puoi avviare una nuova elaborazione non appena la precedente è completata.' },
-  { q: 'Cosa fare se l\'API non risponde?', a: 'Verifica la connessione internet. Il sistema ha un recovery automatico con retry fino a 3 tentativi. Se il problema persiste, contatta il supporto.' },
-  { q: 'Quali formati di documento sono supportati?', a: 'PDF, DOCX, DOC, XLSX, XLS, immagini (JPG, PNG, TIFF), email (.eml, .msg). I file vengono elaborati con OCR se necessario.' },
+  { q: 'How long does processing take?', a: 'Processing time depends on the number of documents. On average: 30-90 seconds for a ZIP containing 20-50 files. Larger ZIPs may take up to 3-5 minutes.' },
+  { q: 'Why are some clauses empty?', a: 'The AI may not find evidence in the report for certain clauses. Use the "Recover Missing Clauses" function or fill them in manually from the detail drawer.' },
+  { q: 'How do I correct the company name?', a: 'In the "Produce Checklist" tab, click the edit icon next to the detected company name. The change propagates to the JSON and the filename.' },
+  { q: 'Can I process multiple analyses at once?', a: 'Currently the system processes one analysis at a time. You can start a new analysis as soon as the previous one has completed.' },
+  { q: 'What should I do if the API is not responding?', a: 'Check your internet connection. The system has automatic recovery with up to 3 retry attempts. If the problem persists, contact support.' },
+  { q: 'Which document formats are supported?', a: 'PDF, DOCX, DOC, XLSX, XLS, images (JPG, PNG, TIFF), email (.eml, .msg). Files are processed with OCR where necessary.' },
 ];
 
 const problemButtons = [
-  { icon: Clock, label: 'Lentezza', solution: 'Verifica il numero di file nello ZIP. Riduci a meno di 80 documenti per performance ottimali. Lo ZIP viene elaborato in batch paralleli.' },
-  { icon: AlertCircle, label: 'Errore', solution: 'Controlla il log errori nell\'admin panel. Gli errori API vengono recuperati automaticamente. Se persiste, prova con un file più piccolo.' },
-  { icon: FolderOpen, label: 'File non carica', solution: 'Assicurati che il file sia in formato ZIP valido e non superi i 500 MB. Verifica che lo ZIP non sia protetto da password.' },
-  { icon: ClipboardCheck, label: 'Risultato incompleto', solution: 'Usa il recovery automatico nella tab 2. Se alcune clausole restano vuote, potrebbe mancare la documentazione nel report originale.' },
+  { icon: Clock, label: 'Slow processing', solution: 'Check the number of files in the ZIP. Reduce to fewer than 80 documents for optimal performance. The ZIP is processed in parallel batches.' },
+  { icon: AlertCircle, label: 'Error', solution: 'Check the error log in the admin panel. API errors are recovered automatically. If the problem persists, try with a smaller file.' },
+  { icon: FolderOpen, label: 'File will not upload', solution: 'Ensure the file is a valid ZIP format and does not exceed 500 MB. Verify that the ZIP is not password-protected.' },
+  { icon: ClipboardCheck, label: 'Incomplete result', solution: 'Use the automatic recovery in tab 2. If some clauses remain empty, the original report may not contain the relevant documentation.' },
 ];
 
 export default function Supporto() {
@@ -28,15 +29,14 @@ export default function Supporto() {
     <div className="space-y-8 max-w-3xl">
       <div>
         <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
-          <HelpCircle className="w-6 h-6 text-primary" /> FAQ & Assistenza
+          <HelpCircle className="w-6 h-6 text-primary" /> Help & Support
         </h1>
-        <p className="text-sm text-muted-foreground mt-1">Risposte rapide e diagnostica guidata</p>
+        <p className="text-sm text-muted-foreground mt-1">Quick answers and guided diagnostics</p>
       </div>
 
-      {/* FAQ */}
       <Card className="glass">
         <CardHeader>
-          <CardTitle className="text-sm font-semibold">Domande Frequenti</CardTitle>
+          <CardTitle className="text-sm font-semibold">Frequently Asked Questions</CardTitle>
         </CardHeader>
         <CardContent>
           <Accordion type="single" collapsible className="space-y-1">
@@ -54,13 +54,12 @@ export default function Supporto() {
         </CardContent>
       </Card>
 
-      {/* Diagnostics */}
       <Card className="glass">
         <CardHeader>
-          <CardTitle className="text-sm font-semibold">Diagnostica Guidata</CardTitle>
+          <CardTitle className="text-sm font-semibold">Guided Diagnostics</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <p className="text-xs text-muted-foreground">Seleziona il problema:</p>
+          <p className="text-xs text-muted-foreground">Select your issue:</p>
           <div className="flex flex-wrap gap-2">
             {problemButtons.map((pb) => {
               const Icon = pb.icon;
@@ -87,9 +86,8 @@ export default function Supporto() {
         </CardContent>
       </Card>
 
-      {/* Contact */}
       <div className="text-center py-4">
-        <p className="text-xs text-muted-foreground">📧 Supporto tecnico: <span className="font-mono text-foreground">admin@audit-os.it</span></p>
+        <p className="text-xs text-muted-foreground">Technical support: <span className="font-mono text-foreground">support@fiverise.co.uk</span></p>
       </div>
     </div>
   );

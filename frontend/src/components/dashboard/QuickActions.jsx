@@ -1,27 +1,16 @@
+// @ts-nocheck
 import React from 'react';
 import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { FileText, ListChecks, ClipboardCheck, ArrowRight } from 'lucide-react';
+import { FileSearch, ArrowRight } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 
 const actions = [
   {
-    path: '/genera-report',
-    icon: FileText,
-    title: 'Genera Report',
-    description: 'Elabora documenti ZIP in report strutturato',
-  },
-  {
-    path: '/produci-checklist',
-    icon: ListChecks,
-    title: 'Produci JSON',
-    description: 'Converti report in checklist clausole ISO',
-  },
-  {
-    path: '/compila-checklist',
-    icon: ClipboardCheck,
-    title: 'Compila Checklist',
-    description: 'Genera documento Word/Excel da template',
+    path: '/new-analysis',
+    icon: FileSearch,
+    title: 'New Analysis',
+    description: 'Upload documents and run an ISO gap analysis',
   },
 ];
 
@@ -46,7 +35,7 @@ export default function QuickActions() {
                   <h3 className="font-semibold text-sm mb-1">{a.title}</h3>
                   <p className="text-xs text-muted-foreground leading-relaxed">{a.description}</p>
                   <div className="flex items-center gap-1 text-primary text-xs font-medium mt-3 opacity-0 group-hover:opacity-100 transition-opacity">
-                    Inizia <ArrowRight className="w-3 h-3" />
+                    Start <ArrowRight className="w-3 h-3" />
                   </div>
                 </CardContent>
               </Card>
