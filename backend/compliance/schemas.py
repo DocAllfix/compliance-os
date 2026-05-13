@@ -50,6 +50,35 @@ class NormGapReport(BaseModel):
     spof_count: int
 
 
+class ExpiredDocument(BaseModel):
+    """One entry in the Phase 2.5 expiry check report.
+
+    `days_overdue > 0`  → document has already expired N days ago
+    `days_overdue == 0` → expires today
+    `days_overdue < 0`  → expires in |N| days (placed in `expiring_soon`)
+    """
+    file_name: str
+    doc_type: str
+    evidence_id: str
+    expiry_date: str           # YYYY-MM-DD
+    days_overdue: int
+    severity: str              # MAJOR / MINOR / OBSERVATION / INFO
+    linked_iso_clauses: List[str]
+
+
+class ExpiryReport(BaseModel):
+    """Output of Phase 2.5 — structured extraction of document expiries.
+
+    Generated from the evidence cards that carry an `expiry_date` field,
+    computed against the analysis date. Severity rules are deterministic
+    (see backend/compliance/expiry_check.py).
+    """
+    audit_date: str                              # YYYY-MM-DD
+    expired_documents: List[ExpiredDocument]     # days_overdue >= 0
+    expiring_soon: List[ExpiredDocument]         # days_overdue < 0 and >= -90
+    no_expiry_information: int                   # count of cards with no expiry_date
+
+
 class ComplianceAnalysisResult(BaseModel):
     analysis_id: str
     company: str
@@ -57,4 +86,5 @@ class ComplianceAnalysisResult(BaseModel):
     analysis_date: str
     norms: List[NormGapReport]
     documents_analyzed: int
-    top_gaps: List[ClauseGap]  # top 5 Major/SPoF cross-norma
+    top_gaps: List[ClauseGap]                    # top 5 Major/SPoF cross-norma
+    expiry_report: Optional[ExpiryReport] = None # Phase 2.5 output (optional)
