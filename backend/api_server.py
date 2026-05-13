@@ -1,5 +1,5 @@
-# ==============================================================================
-# AUDIT-OS — FastAPI REST Backend
+﻿# ==============================================================================
+# ComplianceOS — FastAPI REST Backend
 # ==============================================================================
 # Espone tutti i moduli Python (report_generator, checklist_producer, ecc.)
 # come API REST per il frontend React.
@@ -69,13 +69,14 @@ from modules.db_manager import (
     get_statistiche_utente,
     get_statistiche_globali,
 )
-from modules.checklist_filler import fill_checklist, generate_checklist_filename, detect_standard
-from modules.checklist_producer import (
-    produce_checklist_json_parallel,
-    generate_json_filename,
-    recover_incomplete_clauses,
-    extract_text_from_word,
-)
+# Legacy ComplianceOS modules — not present in ComplianceOS; stub to prevent import errors
+def fill_checklist(*a, **k): raise HTTPException(status_code=501, detail="Legacy endpoint disabled")
+def generate_checklist_filename(*a, **k): return "legacy.docx"
+def detect_standard(*a, **k): raise HTTPException(status_code=501, detail="Legacy endpoint disabled")
+def produce_checklist_json_parallel(*a, **k): raise HTTPException(status_code=501, detail="Legacy endpoint disabled")
+def generate_json_filename(*a, **k): return "legacy.json"
+def recover_incomplete_clauses(*a, **k): raise HTTPException(status_code=501, detail="Legacy endpoint disabled")
+def extract_text_from_word(file_bytes: bytes): return "", None
 
 # log_activity opzionale (non tutti i db_manager la espongono)
 try:
@@ -90,7 +91,7 @@ logging.basicConfig(
     format="%(asctime)s  %(levelname)-8s  %(message)s",
     datefmt="%H:%M:%S",
 )
-logger = logging.getLogger("audit-os-api")
+logger = logging.getLogger("ComplianceOS-api")
 
 # ── GEMINI API KEY ─────────────────────────────────────────────────────────────
 # load_dotenv() sopra carica webapp/.env in os.environ.
@@ -1157,16 +1158,15 @@ async def compliance_analyze(
         _emit(5, "Reading documents...")
 
         def _run():
-            _emit(35, "Indexing evidence...")
-            for norm in norms_list:
-                _emit(50, f"Analysing {norm} conformance [{sector}, {employee_range} employees]...")
-            result = analyze_compliance(
-                evidence_yaml="",
+            from compliance.pipeline import run_compliance_pipeline
+            outcome = run_compliance_pipeline(
+                zip_bytes=file_bytes,
                 company_context=context,
-                emitter=None,
+                emitter=_emit,
             )
-            _emit(90, "Preparing your compliance report...")
-            return result
+            if not outcome.get("success"):
+                raise RuntimeError(outcome.get("error", "Pipeline failed"))
+            return outcome["result"]
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             future = loop.run_in_executor(pool, _run)
@@ -1284,6 +1284,237 @@ async def download_compliance_report(
     )
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Sprint 3.3 — Post-audit chat grounded on the analysis evidences
+# ──────────────────────────────────────────────────────────────────────────────
+
+class ChatRequest(BaseModel):
+    analysis_id: str
+    query: str
+    conversation_id: Optional[str] = None  # reserved for future multi-turn support
+
+
+class ChatSource(BaseModel):
+    evidence_id: str
+    file_name: str
+    excerpt: str
+    iso_clause_primary: str
+    relevance_score: float
+
+
+class ChatResponse(BaseModel):
+    analysis_id: str
+    response: str
+    sources: List[ChatSource]
+
+
+@app.post("/api/compliance/chat", response_model=ChatResponse)
+async def compliance_chat(
+    req: ChatRequest,
+    user: Dict = Depends(_get_current_user),
+):
+    """
+    Grounded post-audit chat.
+
+    Loads the persisted ComplianceAnalysisResult for `analysis_id`,
+    indexes its citations into a fresh in-process EvidenceService,
+    retrieves the most relevant cards for the user's query, and asks
+    the LLM to answer using ONLY the retrieved evidence + the analysis
+    summary (no hallucination).
+
+    Note: ComplianceOS does not persist the raw Phase 2 evidence YAML.
+    The chat is grounded on the citations already serialised in the
+    analysis result (each ClauseGap.sources has evidence_id + file_name
+    + excerpt). For queries about documents that were not cited in any
+    gap, the model will reply that no evidence supports an answer —
+    which is the truthful behaviour given the current persistence model.
+    """
+    import json as _json
+    from modules.db_manager import get_compliance_analysis
+    from compliance.schemas import ComplianceAnalysisResult
+    from compliance.evidence_service import EvidenceService
+    from compliance.context_intake import build_context_prompt_block
+    from pathlib import Path as _Path
+
+    # 1) Load the persisted analysis
+    row = get_compliance_analysis(req.analysis_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+    try:
+        result_data = _json.loads(row["result_json"]) if isinstance(row.get("result_json"), str) else row.get("result_json", {})
+        result = ComplianceAnalysisResult(**result_data)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not parse analysis result: {e}")
+
+    # 2) Reconstruct evidence cards from the citations in the result
+    #    Each ClauseGap.sources entry is already a TraceabilityLink — we
+    #    convert these into card-shaped dicts the EvidenceService can index.
+    seen_ids: set = set()
+    cards: List[Dict[str, Any]] = []
+    for norm in result.norms:
+        for clause in norm.clauses:
+            for src in clause.sources:
+                if src.evidence_id in seen_ids:
+                    continue
+                seen_ids.add(src.evidence_id)
+                cards.append({
+                    "evidence_id":       src.evidence_id,
+                    "file_name":         src.file_name,
+                    "doc_type":          "other",  # not stored on TraceabilityLink
+                    "iso_clause_primary": clause.clause_id,
+                    "gap_signal":        clause.severity in ("MAJOR", "MINOR"),
+                    "summary":           src.excerpt,
+                    "excerpts":          [{"text": src.excerpt}],
+                })
+
+    if not cards:
+        # No citations available — reply truthfully without calling the LLM
+        return ChatResponse(
+            analysis_id=req.analysis_id,
+            response=(
+                "This audit did not surface any evidence citations, so there is no "
+                "document content this chat can ground its answers on. Re-run the "
+                "analysis with a different document set if you want to chat with the "
+                "evidence."
+            ),
+            sources=[],
+        )
+
+    # 3) Index in-process and retrieve top-K for the query
+    service = EvidenceService.from_cards(analysis_id=req.analysis_id, cards=cards)
+    try:
+        retrieved = service.get_evidences_similar_to(req.query, n=6)
+
+        # 4) Build prompt
+        chat_prompt_path = _Path(__file__).parent / "prompts" / "compliance" / "chat_grounded.md"
+        try:
+            sys_prompt = chat_prompt_path.read_text(encoding="utf-8")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Chat prompt missing: {e}")
+        context_block = build_context_prompt_block(result.context)
+        sys_prompt = sys_prompt.replace("{company_context}", context_block)
+
+        # Compose compact analysis summary for the LLM
+        summary_lines: List[str] = [
+            f"Analysis ID: {result.analysis_id}",
+            f"Company: {result.company}",
+            f"Documents analysed: {result.documents_analyzed}",
+            "",
+            "## Norms and severity counts",
+        ]
+        for n in result.norms:
+            summary_lines.append(
+                f"- {n.norm}: {n.major_count} MAJOR / {n.minor_count} MINOR / "
+                f"{n.observation_count} OBSERVATION / {n.conformant_count} CONFORMANT, "
+                f"SPoF={n.spof_count}, overall score={n.overall_score}"
+            )
+        summary_lines.append("")
+        summary_lines.append("## Top 5 priority gaps")
+        for g in (result.top_gaps or [])[:5]:
+            summary_lines.append(f"- [{g.clause_id}] {g.severity}: {g.finding[:200]}")
+
+        if result.expiry_report:
+            summary_lines.append("")
+            summary_lines.append(
+                f"## Expiry status (as of {result.expiry_report.audit_date})"
+            )
+            for d in result.expiry_report.expired_documents[:10]:
+                summary_lines.append(
+                    f"- EXPIRED {d.days_overdue}d ago [{d.severity}]: {d.file_name}"
+                )
+            for d in result.expiry_report.expiring_soon[:5]:
+                summary_lines.append(
+                    f"- Expiring in {abs(d.days_overdue)}d [{d.severity}]: {d.file_name}"
+                )
+
+        evidence_lines: List[str] = ["## Retrieved evidence cards"]
+        for ev in retrieved:
+            evidence_lines.append("---")
+            evidence_lines.append(f"evidence_id: {ev.get('evidence_id','')}")
+            evidence_lines.append(f"file_name: {ev.get('file_name','')}")
+            evidence_lines.append(f"iso_clause_primary: {ev.get('iso_clause_primary','')}")
+            evidence_lines.append(f"gap_signal: {ev.get('gap_signal', False)}")
+            evidence_lines.append(f"excerpt: {str(ev.get('excerpt',''))[:500]}")
+
+        user_prompt = (
+            "## compliance_analysis_summary\n"
+            + "\n".join(summary_lines)
+            + "\n\n"
+            + "\n".join(evidence_lines)
+            + "\n\n## User question\n"
+            + req.query.strip()
+        )
+
+        # 5) Call LLM (Azure first, Gemini fallback)
+        try:
+            from v2.azure_openai_client_v2 import AzureOpenAIClientV2
+            from v2.provider_profiles_v2 import PROFILES
+            profile = PROFILES.get("gpt-4.1-mini-azure")
+            if profile is None:
+                raise RuntimeError("gpt-4.1-mini-azure profile not configured")
+            client = AzureOpenAIClientV2(profile=profile)
+            stream = client.chat_stream(
+                messages=[
+                    {"role": "system", "content": sys_prompt},
+                    {"role": "user",   "content": user_prompt},
+                ],
+                max_tokens=800,
+            )
+            chunks: List[str] = []
+            for chunk in stream:
+                choices = getattr(chunk, "choices", None) or []
+                if choices:
+                    delta = getattr(choices[0], "delta", None)
+                    content = getattr(delta, "content", None) if delta else None
+                    if content:
+                        chunks.append(content)
+            response_text = "".join(chunks).strip()
+        except Exception as e:
+            logging.getLogger("compliance.chat").warning(
+                f"Azure chat failed, falling back to Gemini: {e}"
+            )
+            try:
+                from v2.gemini_client_v2 import GeminiClientV2, analyze_batch_streaming
+                from v2.provider_profiles_v2 import PROFILES as _P
+                profile = _P.get("gemini-2.5-flash")
+                if profile is None:
+                    raise RuntimeError("gemini-2.5-flash profile not configured")
+                gc = GeminiClientV2(profile=profile)
+                result_text = analyze_batch_streaming(
+                    client=gc,
+                    batch_docs=[{"filename": "chat_query", "content": user_prompt}],
+                    universal_prompt=sys_prompt,
+                ).text
+                response_text = (result_text or "").strip()
+            except Exception as e2:
+                raise HTTPException(status_code=502, detail=f"Both LLM providers failed: {e2}")
+
+        if not response_text:
+            response_text = "No response could be generated for this query."
+
+        # 6) Hydrate sources from the retrieved set
+        sources_out: List[ChatSource] = []
+        for ev in retrieved:
+            sources_out.append(ChatSource(
+                evidence_id=str(ev.get("evidence_id", "")),
+                file_name=str(ev.get("file_name", "")),
+                excerpt=str(ev.get("excerpt", ""))[:300],
+                iso_clause_primary=str(ev.get("iso_clause_primary", "")),
+                relevance_score=float(1.0 - float(ev.get("distance", 0.5))),
+            ))
+
+        return ChatResponse(
+            analysis_id=req.analysis_id,
+            response=response_text,
+            sources=sources_out,
+        )
+    finally:
+        try:
+            service.close()
+        except Exception:
+            pass
+
+
 @app.patch("/api/compliance/analyses/{analysis_id}/actions/{clause_id}")
 async def update_ncr_action(
     analysis_id: str,
@@ -1309,7 +1540,7 @@ if __name__ == "__main__":
     import uvicorn
     print("=" * 60)
     print("  ComplianceOS API SERVER")
-    print(f"  Gemini API Key: {'✓ configured' if GEMINI_API_KEY else '✗ MISSING'}")
+    print(f"  Gemini API Key: {'OK' if GEMINI_API_KEY else 'MISSING'}")
     print("=" * 60)
     uvicorn.run(
         "api_server:app",
