@@ -1,0 +1,33 @@
+{
+  "run_at": "2026-05-13T20:50:07.646672Z",
+  "source_zip": "C:\\Users\\user\\Desktop\\ANTIGRAVITY\\ISO14001\\CONSORZIO JEOCON 14001.zip",
+  "sizes": [
+    50
+  ],
+  "results": [
+    {
+      "target_size": 50,
+      "zip_bytes": 31713498,
+      "success": true,
+      "error": null,
+      "elapsed_s": 466.84,
+      "peak_ram_mb": 57.6,
+      "events_count": 26,
+      "documents_analyzed": 44,
+      "expiry_set": true,
+      "executive_set": true,
+      "norms": [
+        {
+          "norm": "ISO 14001:2015",
+          "clauses": 22,
+          "major_count": 6,
+          "minor_count": 15,
+          "observation_count": 0,
+          "conformant_count": 1,
+          "spof_count": 6,
+          "overall_score": 41
+        }
+      ]
+    }
+  ]
+}

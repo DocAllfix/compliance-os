@@ -522,10 +522,10 @@ def run_compliance_pipeline(
         # ── Phase 2.5: Expiry check (deterministic, Python-only) ─────────────
         from compliance.expiry_check import run_expiry_check
         from compliance.schemas import ExpiryReport
-        from datetime import datetime as _dt
+        from datetime import datetime as _dt, timezone as _tz
         expiry_dict = run_expiry_check(
             evidence_yaml=evidence_yaml,
-            audit_date=_dt.utcnow().date(),
+            audit_date=_dt.now(_tz.utc).date(),
             emitter=emit,
         )
 

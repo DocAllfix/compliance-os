@@ -57,7 +57,8 @@ def run_expiry_check(
         no_expiry_information
     """
     if audit_date is None:
-        audit_date = datetime.utcnow().date()
+        from datetime import timezone as _tz
+        audit_date = datetime.now(_tz.utc).date()
 
     def emit(pct: float, msg: str) -> None:
         if emitter:
