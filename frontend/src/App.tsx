@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes } from 'react-router-dom';
+import { Navigate, Route, Routes, useParams } from 'react-router-dom';
 import { AppShell } from '@/components/AppShell';
 import { ProtectedRoute } from '@/components/ProtectedRoute';
 import { Dashboard } from '@/pages/Dashboard';
@@ -9,6 +9,13 @@ import { Chat } from '@/pages/Chat';
 import { Login } from '@/pages/Login';
 import { useTheme } from '@/lib/theme';
 
+/** Sprint G.4.7: redirect legacy `/analyses/:id/chat` → `/chat?analysis=:id`,
+ *  preservando il parametro così l'utente atterra sullo scope giusto. */
+function LegacyAnalysisChatRedirect() {
+  const { id } = useParams();
+  return <Navigate to={`/chat?analysis=${encodeURIComponent(id ?? '')}`} replace />;
+}
+
 function App() {
   // Theme provider effect
   useTheme();
@@ -17,7 +24,11 @@ function App() {
       {/* Public */}
       <Route path="/login" element={<Login />} />
 
-      {/* Chat — protected, own 3-column layout */}
+      {/* Chat full page — protected, own 3-column layout.
+          Sprint G.4: la chat scoped a una specifica analisi è ora un drawer
+          overlay (vedi ChatDrawer in AppShell), non più una route separata.
+          Per chi atterra sul vecchio link /analyses/:id/chat redirigiamo
+          alla full page con query param ?analysis=:id. */}
       <Route
         path="/chat"
         element={
@@ -30,7 +41,7 @@ function App() {
         path="/analyses/:id/chat"
         element={
           <ProtectedRoute>
-            <Chat />
+            <LegacyAnalysisChatRedirect />
           </ProtectedRoute>
         }
       />

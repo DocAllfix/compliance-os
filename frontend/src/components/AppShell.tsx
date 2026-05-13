@@ -1,22 +1,32 @@
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { Sidebar } from './Sidebar';
+import { ChatDrawer } from './ChatDrawer';
+import { useChatDrawer } from '@/lib/useChatStore';
 
 /**
- * AppShell — sidebar + outlet + context-aware "Ask the analyst" FAB.
+ * AppShell — sidebar + outlet + context-aware "Ask the analyst" FAB + ChatDrawer.
  *
- * When the user is on /analyses/:id or /analyses/:id/plan, the FAB navigates
- * to the chat scoped to that specific analysis. Otherwise it falls back to
- * /chat (which renders an empty state inviting the user to pick an analysis).
+ * Sprint G.4.4: il FAB ora apre il drawer overlay quando l'utente è su
+ * /analyses/:id (o /plan), invece di navigare a un'altra pagina. Per
+ * la chat libera senza scope (sidebar link → /chat) c'è una route a sé.
  */
 export function AppShell() {
   const navigate = useNavigate();
   const location = useLocation();
+  const { open: openDrawer } = useChatDrawer();
 
-  // Match /analyses/<id> and /analyses/<id>/plan but NOT /analyses/<id>/chat
-  // (already on the chat page) or just /analyses (list redirect).
+  // Match /analyses/<id> e /analyses/<id>/plan ma non /chat
   const match = location.pathname.match(/^\/analyses\/([^/]+)(?:\/plan)?$/);
   const analysisId = match?.[1];
-  const fabTarget = analysisId ? `/analyses/${analysisId}/chat` : '/chat';
+
+  const handleFabClick = () => {
+    if (analysisId) {
+      openDrawer(analysisId);
+    } else {
+      // Niente analisi nel contesto corrente → vai alla pagina chat libera
+      navigate('/chat');
+    }
+  };
 
   return (
     <div className="shell">
@@ -24,12 +34,13 @@ export function AppShell() {
       <main className="main">
         <Outlet />
       </main>
-      <button className="ask-ai-fab" onClick={() => navigate(fabTarget)}>
+      <button className="ask-ai-fab" onClick={handleFabClick}>
         <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
           <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
         </svg>
         Ask the analyst
       </button>
+      <ChatDrawer />
     </div>
   );
 }

@@ -1,89 +1,103 @@
 /**
- * In-process chat state hook.
+ * useChat — hook che gestisce una conversazione attiva.
  *
- * Holds an ordered list of turns for a single conversation grounded on
- * an analysis_id. No DB persistence — refresh wipes the conversation,
- * which is acceptable for the MVP (a future backend sprint can add
- * server-side chat persistence keyed on analysis_id + conversation_id).
+ * Sprint G.4 refactor: prima Sprint F2 il hook teneva lo stato in `useState`
+ * locale, ora delega tutto al `useChatStore` globale così drawer e pagina
+ * full possono condividere i threads in localStorage. L'API esterna resta
+ * compatibile per minimizzare il refactor di chi consumava `useChat`.
  *
- * Errors are surfaced as assistant turns with an `error: true` flag so
- * the UI can render them inline without toast plumbing.
+ * Modalità scope:
+ *   - "general"       → POST /api/compliance/chat senza analysis_id
+ *   - "<analysisId>"  → POST /api/compliance/chat con analysis_id reale
  */
 import { useCallback, useRef, useState } from 'react';
-import { compliance, type ChatSource, ApiError } from './api';
+import { compliance, ApiError } from './api';
+import { useChatStore, type ChatTurn, type ChatScope } from './useChatStore';
 
-export interface ChatTurn {
-  id: string;
-  role: 'user' | 'assistant';
-  text: string;
-  sources?: ChatSource[];
-  timestamp: number;
-  pending?: boolean;   // true while awaiting LLM response
-  error?: boolean;     // true if the request failed
-}
+export type { ChatTurn };
 
 export interface UseChatResult {
+  threadId: string | null;
   turns: ChatTurn[];
   isSending: boolean;
   sendMessage: (query: string) => Promise<void>;
-  clearConversation: () => void;
+  newConversation: () => void;
+  selectThread: (threadId: string) => void;
   error: string | null;
 }
 
-function randomId(): string {
-  // Lightweight unique-ish id; we don't need cryptographic strength here.
-  return `t_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+function genTurnId(): string {
+  return `turn_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
-export function useChat(analysisId: string | undefined): UseChatResult {
-  const [turns, setTurns] = useState<ChatTurn[]>([]);
+export function useChat(scope: ChatScope): UseChatResult {
+  const store = useChatStore();
+  const [threadId, setThreadId] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Track pending assistant turn id so we can replace it on resolution.
   const pendingIdRef = useRef<string | null>(null);
+
+  const threads = store.getThreads(scope);
+  const activeThread = threadId ? store.getThread(threadId) : threads[0];
+  const turns = activeThread?.turns ?? [];
+
+  const newConversation = useCallback(() => {
+    const t = store.createThread(scope);
+    setThreadId(t.id);
+    setError(null);
+  }, [store, scope]);
+
+  const selectThread = useCallback((tid: string) => {
+    setThreadId(tid);
+    setError(null);
+  }, []);
 
   const sendMessage = useCallback(
     async (query: string) => {
       const trimmed = query.trim();
-      if (!trimmed || !analysisId) return;
+      if (!trimmed) return;
 
-      // Optimistic user turn + pending assistant placeholder
+      // Se non c'è un thread attivo per questo scope, ne creiamo uno on-the-fly
+      let activeTid = threadId;
+      if (!activeTid || !store.getThread(activeTid)) {
+        const t = store.createThread(scope);
+        activeTid = t.id;
+        setThreadId(activeTid);
+      }
+
+      // Turn user ottimistico
       const userTurn: ChatTurn = {
-        id: randomId(),
+        id: genTurnId(),
         role: 'user',
         text: trimmed,
         timestamp: Date.now(),
       };
+      // Placeholder assistant pending
+      const placeholderId = genTurnId();
       const placeholder: ChatTurn = {
-        id: randomId(),
+        id: placeholderId,
         role: 'assistant',
         text: '',
         timestamp: Date.now(),
         pending: true,
       };
-      pendingIdRef.current = placeholder.id;
+      pendingIdRef.current = placeholderId;
 
-      setTurns((prev) => [...prev, userTurn, placeholder]);
+      store.appendTurn(activeTid, userTurn);
+      store.appendTurn(activeTid, placeholder);
       setIsSending(true);
       setError(null);
 
       try {
-        const resp = await compliance.chat({
-          analysis_id: analysisId,
-          query: trimmed,
+        const reqBody = scope === 'general'
+          ? { query: trimmed, analysis_id: null }
+          : { query: trimmed, analysis_id: scope };
+        const resp = await compliance.chat(reqBody as Parameters<typeof compliance.chat>[0]);
+        store.updateTurn(activeTid, placeholderId, {
+          pending: false,
+          text: resp.response,
+          sources: resp.sources,
         });
-        setTurns((prev) =>
-          prev.map((t) =>
-            t.id === placeholder.id
-              ? {
-                  ...t,
-                  pending: false,
-                  text: resp.response,
-                  sources: resp.sources,
-                }
-              : t,
-          ),
-        );
       } catch (e) {
         const msg =
           e instanceof ApiError
@@ -92,31 +106,26 @@ export function useChat(analysisId: string | undefined): UseChatResult {
             ? e.message
             : 'Unknown error';
         setError(msg);
-        setTurns((prev) =>
-          prev.map((t) =>
-            t.id === placeholder.id
-              ? {
-                  ...t,
-                  pending: false,
-                  error: true,
-                  text: `This question could not be answered: ${msg}`,
-                }
-              : t,
-          ),
-        );
+        store.updateTurn(activeTid, placeholderId, {
+          pending: false,
+          error: true,
+          text: `This question could not be answered: ${msg}`,
+        });
       } finally {
         setIsSending(false);
         pendingIdRef.current = null;
       }
     },
-    [analysisId],
+    [scope, store, threadId],
   );
 
-  const clearConversation = useCallback(() => {
-    setTurns([]);
-    setError(null);
-    pendingIdRef.current = null;
-  }, []);
-
-  return { turns, isSending, sendMessage, clearConversation, error };
+  return {
+    threadId: activeThread?.id ?? null,
+    turns,
+    isSending,
+    sendMessage,
+    newConversation,
+    selectThread,
+    error,
+  };
 }

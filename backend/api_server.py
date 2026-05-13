@@ -1289,7 +1289,7 @@ async def download_compliance_report(
 # ──────────────────────────────────────────────────────────────────────────────
 
 class ChatRequest(BaseModel):
-    analysis_id: str
+    analysis_id: Optional[str] = None  # Sprint G.4: opzionale → chat "general" senza grounding
     query: str
     conversation_id: Optional[str] = None  # reserved for future multi-turn support
 
@@ -1303,9 +1303,52 @@ class ChatSource(BaseModel):
 
 
 class ChatResponse(BaseModel):
-    analysis_id: str
+    analysis_id: Optional[str] = None       # echo of req.analysis_id; None per chat general
     response: str
     sources: List[ChatSource]
+
+
+def _call_chat_llm(sys_prompt: str, user_prompt: str, max_tokens: int = 800) -> str:
+    """Helper condiviso: Azure primario + fallback Gemini per la chat."""
+    try:
+        from v2.azure_openai_client_v2 import AzureOpenAIClientV2
+        from v2.provider_profiles_v2 import PROFILES
+        profile = PROFILES.get("gpt-4.1-mini-azure")
+        if profile is None:
+            raise RuntimeError("gpt-4.1-mini-azure profile not configured")
+        client = AzureOpenAIClientV2(profile=profile)
+        stream = client.chat_stream(
+            messages=[
+                {"role": "system", "content": sys_prompt},
+                {"role": "user",   "content": user_prompt},
+            ],
+            max_tokens=max_tokens,
+        )
+        chunks: List[str] = []
+        for chunk in stream:
+            choices = getattr(chunk, "choices", None) or []
+            if choices:
+                delta = getattr(choices[0], "delta", None)
+                content = getattr(delta, "content", None) if delta else None
+                if content:
+                    chunks.append(content)
+        return "".join(chunks).strip()
+    except Exception as e:
+        logging.getLogger("compliance.chat").warning(
+            f"Azure chat failed, falling back to Gemini: {e}"
+        )
+        from v2.gemini_client_v2 import GeminiClientV2, analyze_batch_streaming
+        from v2.provider_profiles_v2 import PROFILES as _P
+        profile = _P.get("gemini-2.5-flash")
+        if profile is None:
+            raise RuntimeError("gemini-2.5-flash profile not configured")
+        gc = GeminiClientV2(profile=profile)
+        result_text = analyze_batch_streaming(
+            client=gc,
+            batch_docs=[{"filename": "chat_query", "content": user_prompt}],
+            universal_prompt=sys_prompt,
+        ).text
+        return (result_text or "").strip()
 
 
 @app.post("/api/compliance/chat", response_model=ChatResponse)
@@ -1314,27 +1357,44 @@ async def compliance_chat(
     user: Dict = Depends(_get_current_user),
 ):
     """
-    Grounded post-audit chat.
+    Grounded post-audit chat (con analysis_id) o general advisory (senza).
 
-    Loads the persisted ComplianceAnalysisResult for `analysis_id`,
-    indexes its citations into a fresh in-process EvidenceService,
-    retrieves the most relevant cards for the user's query, and asks
-    the LLM to answer using ONLY the retrieved evidence + the analysis
-    summary (no hallucination).
+    Modalità:
+    - analysis_id valorizzato → carica ComplianceAnalysisResult dal DB,
+      ricostruisce le evidence cards dalle citations, indexa in ChromaDB
+      ephemeral, retrieva top-K per la query, prompt grounded.
+    - analysis_id None        → no DB lookup, no ChromaDB, prompt
+      "chat_general" advisory su ISO 9001/14001/45001 generic. Sources = [].
 
     Note: ComplianceOS does not persist the raw Phase 2 evidence YAML.
-    The chat is grounded on the citations already serialised in the
-    analysis result (each ClauseGap.sources has evidence_id + file_name
-    + excerpt). For queries about documents that were not cited in any
-    gap, the model will reply that no evidence supports an answer —
-    which is the truthful behaviour given the current persistence model.
+    Quando in grounded mode, la chat ground sui sources già serializzati
+    nel result (ClauseGap.sources). Documenti non citati in alcun gap non
+    sono visibili alla chat — è il comportamento veritiero dato il
+    persistence model attuale.
     """
+    from pathlib import Path as _Path
+
+    # ─── Branch general (no grounding) ──────────────────────────────────
+    if req.analysis_id is None or req.analysis_id.strip() == "":
+        chat_prompt_path = _Path(__file__).parent / "prompts" / "compliance" / "chat_general.md"
+        try:
+            sys_prompt = chat_prompt_path.read_text(encoding="utf-8")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"chat_general.md missing: {e}")
+        try:
+            response_text = _call_chat_llm(sys_prompt, req.query.strip(), max_tokens=900)
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Both LLM providers failed: {e}")
+        if not response_text:
+            response_text = "No response could be generated for this query."
+        return ChatResponse(analysis_id=None, response=response_text, sources=[])
+
+    # ─── Branch grounded (analysis_id presente) ─────────────────────────
     import json as _json
     from modules.db_manager import get_compliance_analysis
     from compliance.schemas import ComplianceAnalysisResult
     from compliance.evidence_service import EvidenceService
     from compliance.context_intake import build_context_prompt_block
-    from pathlib import Path as _Path
 
     # 1) Load the persisted analysis
     row = get_compliance_analysis(req.analysis_id)
@@ -1445,49 +1505,11 @@ async def compliance_chat(
             + req.query.strip()
         )
 
-        # 5) Call LLM (Azure first, Gemini fallback)
+        # 5) Call LLM via shared helper (Azure first, Gemini fallback)
         try:
-            from v2.azure_openai_client_v2 import AzureOpenAIClientV2
-            from v2.provider_profiles_v2 import PROFILES
-            profile = PROFILES.get("gpt-4.1-mini-azure")
-            if profile is None:
-                raise RuntimeError("gpt-4.1-mini-azure profile not configured")
-            client = AzureOpenAIClientV2(profile=profile)
-            stream = client.chat_stream(
-                messages=[
-                    {"role": "system", "content": sys_prompt},
-                    {"role": "user",   "content": user_prompt},
-                ],
-                max_tokens=800,
-            )
-            chunks: List[str] = []
-            for chunk in stream:
-                choices = getattr(chunk, "choices", None) or []
-                if choices:
-                    delta = getattr(choices[0], "delta", None)
-                    content = getattr(delta, "content", None) if delta else None
-                    if content:
-                        chunks.append(content)
-            response_text = "".join(chunks).strip()
+            response_text = _call_chat_llm(sys_prompt, user_prompt, max_tokens=800)
         except Exception as e:
-            logging.getLogger("compliance.chat").warning(
-                f"Azure chat failed, falling back to Gemini: {e}"
-            )
-            try:
-                from v2.gemini_client_v2 import GeminiClientV2, analyze_batch_streaming
-                from v2.provider_profiles_v2 import PROFILES as _P
-                profile = _P.get("gemini-2.5-flash")
-                if profile is None:
-                    raise RuntimeError("gemini-2.5-flash profile not configured")
-                gc = GeminiClientV2(profile=profile)
-                result_text = analyze_batch_streaming(
-                    client=gc,
-                    batch_docs=[{"filename": "chat_query", "content": user_prompt}],
-                    universal_prompt=sys_prompt,
-                ).text
-                response_text = (result_text or "").strip()
-            except Exception as e2:
-                raise HTTPException(status_code=502, detail=f"Both LLM providers failed: {e2}")
+            raise HTTPException(status_code=502, detail=f"Both LLM providers failed: {e}")
 
         if not response_text:
             response_text = "No response could be generated for this query."
@@ -1549,3 +1571,4 @@ if __name__ == "__main__":
         reload=True,
         log_level="info",
     )
+# touch Thu May 14 01:48:21     2026
