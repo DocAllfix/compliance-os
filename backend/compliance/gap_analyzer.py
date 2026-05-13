@@ -33,6 +33,7 @@ from compliance.clause_helpers import (
     get_severity_floor,
 )
 from compliance.embedder import EvidenceEmbedder
+from compliance.evidence_service import EvidenceService
 from compliance.iso_clauses.iso9001_clauses import (
     ISO9001_CLAUSES,
     ISO9001_HIGH_FREQUENCY_CLAUSES,
@@ -142,6 +143,12 @@ def analyze_compliance(
     indexed = embedder.index_evidence_cards(cards)
     emit(15.0, f"Embedded {indexed} cards. Starting gap analysis…")
 
+    # Sprint 3.2 — wrap the embedder in an EvidenceService so retrieval goes
+    # through the same typed API used by the chat endpoint and any future
+    # post-audit query path. The service is non-owning: when we close it,
+    # we still keep the embedder alive until the explicit close below.
+    evidence_service = EvidenceService(analysis_id=analysis_id, embedder=embedder)
+
     context_block = build_context_prompt_block(company_context)
     # Phase 3 batches up to GAP_BATCH_SIZE clauses per LLM call — use the
     # batch-format prompt (gap_analysis_batch.md) so the model returns
@@ -155,11 +162,12 @@ def analyze_compliance(
     norm_reports: List[NormGapReport] = _analyse_norms_parallel(
         norms=norms_to_analyse,
         base_prompt=base_prompt,
-        embedder=embedder,
+        evidence_service=evidence_service,
         company_context=company_context,
         emit=emit,
     )
 
+    evidence_service.close()  # no-op when non-owning (see EvidenceService docs)
     embedder.close()
     emit(90.0, "Compiling report…")
 
@@ -185,7 +193,7 @@ def analyze_compliance(
 def _analyse_norms_parallel(
     norms: List[str],
     base_prompt: str,
-    embedder: EvidenceEmbedder,
+    evidence_service: EvidenceService,
     company_context: CompanyContext,
     emit: Callable,
 ) -> List[NormGapReport]:
@@ -206,7 +214,7 @@ def _analyse_norms_parallel(
             norm=norm,
             clauses=norm_cfg["clauses"],
             norm_prompt=norm_prompt,
-            embedder=embedder,
+            evidence_service=evidence_service,
             company_context=company_context,
             emit=emit,
             pct_base=15.0,
@@ -225,7 +233,7 @@ def _analyse_norms_parallel(
             norm=norm,
             clauses=norm_cfg["clauses"],
             norm_prompt=norm_prompt,
-            embedder=embedder,
+            evidence_service=evidence_service,
             company_context=company_context,
             emit=emit,
             pct_base=15.0 + norm_idx * pct_per_norm,
@@ -264,7 +272,7 @@ def _analyse_norm(
     norm: str,
     clauses: Dict[str, Dict[str, Any]],
     norm_prompt: str,
-    embedder: EvidenceEmbedder,
+    evidence_service: EvidenceService,
     company_context: CompanyContext,
     emit: Callable,
     pct_base: float,
@@ -290,10 +298,11 @@ def _analyse_norm(
             f"{norm}: batch {batch_idx + 1}/{total_batches} ({len(batch)} clauses)…",
         )
 
-        # Retrieve evidences for every clause in the batch.
-        # Each entry: (clause_dict, [evidence_card, …])
+        # Retrieve evidences for every clause in the batch via the typed
+        # EvidenceService (Sprint 3.2). Same retrieval semantics as before,
+        # just routed through the typed API so chat and tests share it.
         clause_evidences: List[tuple] = [
-            (clause, embedder.query_for_clause(clause, n_results=GAP_RETRIEVAL_TOP_K))
+            (clause, evidence_service.get_evidences_for_clause(clause, n=GAP_RETRIEVAL_TOP_K))
             for clause in batch
         ]
 
