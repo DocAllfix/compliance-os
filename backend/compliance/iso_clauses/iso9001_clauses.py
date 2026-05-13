@@ -4,6 +4,27 @@ ISO 9001:2015 clause knowledge base.
 Each entry defines the clause's identity, risk profile, sector criticality,
 typical non-conformities, ChromaDB evidence keywords, and remediation templates.
 Used by the gap analyser to score and triage findings.
+
+Derived metadata (added by Sprint 0):
+    Four extra fields are *derived at read time* by `backend.compliance.clause_helpers`
+    rather than hard-coded here, to avoid bulk editing every clause dict:
+
+      • criticality_tier  → "critical" if is_spof OR in ISO9001_HIGH_FREQUENCY_CLAUSES,
+                            "passing" for §4.x context clauses, else "standard"
+      • severity_floor    → "MAJOR" for critical, "MINOR" for standard, None for passing
+      • weight            → 5 / 3 / 1 (critical / standard / passing)
+      • expiry_relevant   → True if title/area mentions training, calibration,
+                            internal audit, documented information, CAPA, etc.
+
+    Any clause MAY override a derived field by setting it explicitly in the dict
+    (e.g. `"severity_floor": "MAJOR"` to force a stricter floor on a non-SPoF
+    clause). When present, the explicit value always wins over the derived one.
+
+Tier distribution for ISO 9001 (computed at runtime — see Sprint 0 validation):
+    critical ≈ 10 clauses (5.1, 6.1, 7.2, 7.3, 7.5, 8.4, 9.2, 9.3, 10.2 + the
+              other HIGH_FREQUENCY entries)
+    passing  ≈ 4 clauses (§4.1, §4.2, §4.3, §4.4)
+    standard ≈ 13 clauses (the rest)
 """
 from __future__ import annotations
 

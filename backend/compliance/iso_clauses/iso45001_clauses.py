@@ -12,6 +12,17 @@ SPoF per il PDF (§5.3):
 
 Cluster NC frequenti da audit reali (§5.1 PDF):
     6.1.2, 5.4/7.3, 8.1.4, 9.1, 10.2
+
+Derived metadata (added by Sprint 0):
+    Four extra fields are derived at read time by `backend.compliance.clause_helpers`
+    (criticality_tier, severity_floor, weight, expiry_relevant). Any clause MAY
+    override a derived field by setting it explicitly in the dict. See the
+    docstring of iso9001_clauses.py for the full derivation rules.
+
+Tier distribution for ISO 45001 (computed at runtime — see Sprint 0 validation):
+    critical ≈ 6 clauses (the HIGH_FREQUENCY + SPoF entries)
+    passing  ≈ 3-4 clauses (§4.x context)
+    standard ≈ the rest
 """
 from __future__ import annotations
 
