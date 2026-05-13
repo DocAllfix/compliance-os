@@ -2257,3 +2257,34 @@
   .kpi-trend.down {
     color: var(--severity-major);
   }
+
+  /* Sprint F4: Plan action card extra fields */
+  .action-remediation {
+    margin: 12px 0 0;
+    padding: 10px 12px;
+    background: var(--bg-elevated);
+    border-radius: 6px;
+    font-size: 13px;
+    color: var(--text-secondary);
+    line-height: 1.55;
+  }
+  .action-remediation b { color: var(--text-primary); }
+
+  /* Sprint F4: sidebar disabled items */
+  .nav-item-disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+    color: var(--text-tertiary) !important;
+  }
+  .nav-item-disabled:hover { background: transparent !important; }
+  .nav-soon {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 2px 6px;
+    background: var(--bg-elevated);
+    color: var(--text-tertiary);
+    border-radius: 3px;
+  }
