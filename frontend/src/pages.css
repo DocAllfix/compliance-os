@@ -2238,3 +2238,22 @@
     opacity: 0.5;
     cursor: not-allowed;
   }
+
+  /* ─── Sprint F3: Dashboard cleanup ─── */
+  .empty-dashboard {
+    padding: 48px 32px;
+    background: var(--bg-surface);
+    border: 1px dashed var(--border-default);
+    border-radius: 10px;
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 14px;
+    line-height: 1.6;
+    max-width: 640px;
+    margin: 40px auto;
+  }
+  .empty-dashboard p { margin: 0; }
+
+  .kpi-trend.down {
+    color: var(--severity-major);
+  }
