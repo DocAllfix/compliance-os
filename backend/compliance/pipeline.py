@@ -546,6 +546,19 @@ def run_compliance_pipeline(
                 f"ExpiryReport schema validation failed: {e!s} — continuing without it"
             )
 
+        # ── Phase 4: Executive summary (LLM) ─────────────────────────────────
+        emit(92.0, "Phase 4: drafting executive summary…")
+        try:
+            from compliance.schemas import ExecutiveSummary
+            es_dict = generate_executive_summary(result)
+            if es_dict:
+                result.executive_summary = ExecutiveSummary(**es_dict)
+        except Exception as e:
+            import logging as _log
+            _log.getLogger("compliance.pipeline").warning(
+                f"ExecutiveSummary generation failed: {e!s} — continuing without it"
+            )
+
         elapsed = round(time.monotonic() - start, 1)
         emit(100.0, f"Pipeline complete in {elapsed}s.")
 
@@ -564,3 +577,170 @@ def run_compliance_pipeline(
             "result":      None,
             "error":       str(e),
         }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Phase 4 — Executive Summary generation (Sprint 4)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def generate_executive_summary(result: "ComplianceAnalysisResult") -> Optional[Dict[str, Any]]:
+    """
+    Build the executive summary for the manager-facing report.
+
+    Calls the LLM with `executive_summary_prompt.md` + a compact JSON view of
+    the analysis result, and parses the response into the schema documented
+    in the prompt. Returns a dict ready to be validated by ExecutiveSummary,
+    or None on unrecoverable failure.
+
+    Lives in pipeline.py (not in a new module) because it composes the
+    existing Phase 2/3 outputs into a Phase 4 narrative — keeping the
+    orchestration boundary in one file.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+    from compliance.context_intake import build_context_prompt_block
+
+    prompt_path = _Path(__file__).resolve().parent.parent / "prompts" / "compliance" / "executive_summary_prompt.md"
+    try:
+        system_prompt = prompt_path.read_text(encoding="utf-8")
+    except Exception as e:
+        import logging as _log
+        _log.getLogger("compliance.pipeline").warning(f"executive_summary_prompt.md missing: {e}")
+        return None
+
+    context_block = build_context_prompt_block(result.context)
+    system_prompt = system_prompt.replace("{company_context}", context_block)
+
+    # Build a compact JSON view of the analysis — full ClauseGap objects are
+    # too verbose for the prompt; we keep only the fields the prompt needs.
+    compact: Dict[str, Any] = {
+        "company": result.company,
+        "context": result.context.model_dump() if hasattr(result.context, "model_dump") else dict(result.context),
+        "documents_analyzed": result.documents_analyzed,
+        "norms": [],
+    }
+    for norm in result.norms:
+        compact["norms"].append({
+            "norm":             norm.norm,
+            "overall_score":    norm.overall_score,
+            "major_count":      norm.major_count,
+            "minor_count":      norm.minor_count,
+            "observation_count": norm.observation_count,
+            "conformant_count": norm.conformant_count,
+            "spof_count":       norm.spof_count,
+            "clauses": [
+                {
+                    "clause_id":   g.clause_id,
+                    "severity":    g.severity,
+                    "is_spof":     g.is_spof,
+                    "finding":     g.finding[:300],
+                    "sources":     [
+                        {"file_name": s.file_name, "evidence_id": s.evidence_id}
+                        for s in g.sources[:3]
+                    ],
+                    "remediation": {
+                        "what":   g.remediation.what[:200],
+                        "who":    g.remediation.who,
+                        "when":   g.remediation.when,
+                        "effort": g.remediation.effort,
+                    },
+                }
+                for g in norm.clauses
+            ],
+        })
+    compact["top_gaps"] = [
+        {
+            "clause_id": g.clause_id,
+            "severity":  g.severity,
+            "is_spof":   g.is_spof,
+            "finding":   g.finding[:300],
+        }
+        for g in result.top_gaps
+    ]
+    if result.expiry_report is not None:
+        compact["expiry_report"] = {
+            "audit_date":           result.expiry_report.audit_date,
+            "no_expiry_information": result.expiry_report.no_expiry_information,
+            "expired_documents":    [d.model_dump() for d in result.expiry_report.expired_documents],
+            "expiring_soon":        [d.model_dump() for d in result.expiry_report.expiring_soon],
+        }
+
+    user_prompt = (
+        "## ComplianceAnalysisResult (compact JSON view)\n"
+        "```json\n"
+        + _json.dumps(compact, ensure_ascii=False, indent=2)
+        + "\n```\n\n"
+        "Produce the executive summary JSON object as instructed."
+    )
+
+    # Call Azure GPT-4.1-mini, with Gemini fallback
+    raw = ""
+    try:
+        from v2.azure_openai_client_v2 import AzureOpenAIClientV2
+        from v2.provider_profiles_v2 import PROFILES
+        profile = PROFILES.get("gpt-4.1-mini-azure")
+        if profile is None:
+            raise RuntimeError("gpt-4.1-mini-azure profile not configured")
+        client = AzureOpenAIClientV2(profile=profile)
+        stream = client.chat_stream(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user",   "content": user_prompt},
+            ],
+            max_tokens=2500,
+        )
+        chunks: List[str] = []
+        for chunk in stream:
+            choices = getattr(chunk, "choices", None) or []
+            if choices:
+                delta = getattr(choices[0], "delta", None)
+                content = getattr(delta, "content", None) if delta else None
+                if content:
+                    chunks.append(content)
+        raw = "".join(chunks).strip()
+    except Exception as e:
+        import logging as _log
+        _log.getLogger("compliance.pipeline").warning(
+            f"Azure executive_summary failed, falling back to Gemini: {e}"
+        )
+        try:
+            from v2.gemini_client_v2 import GeminiClientV2, analyze_batch_streaming
+            from v2.provider_profiles_v2 import PROFILES as _P
+            profile = _P.get("gemini-2.5-flash")
+            if profile is None:
+                raise RuntimeError("gemini-2.5-flash profile not configured")
+            gc = GeminiClientV2(profile=profile)
+            raw = (analyze_batch_streaming(
+                client=gc,
+                batch_docs=[{"filename": "exec_summary_query", "content": user_prompt}],
+                universal_prompt=system_prompt,
+            ).text or "").strip()
+        except Exception as e2:
+            import logging as _log
+            _log.getLogger("compliance.pipeline").warning(
+                f"Both LLM providers failed for executive_summary: {e2}"
+            )
+            return None
+
+    # Parse JSON (tolerate code fences)
+    text = raw.strip()
+    if text.startswith("```"):
+        # strip first fence line
+        nl = text.find("\n")
+        if nl >= 0:
+            text = text[nl + 1:]
+        if text.rstrip().endswith("```"):
+            text = text.rstrip()[:-3]
+    text = text.strip()
+
+    try:
+        data = _json.loads(text)
+        if not isinstance(data, dict):
+            return None
+        return data
+    except Exception as e:
+        import logging as _log
+        _log.getLogger("compliance.pipeline").warning(
+            f"executive_summary JSON parse failed: {e!s} — raw[:200]={raw[:200]!r}"
+        )
+        return None

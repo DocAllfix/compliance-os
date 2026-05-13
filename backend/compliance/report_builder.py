@@ -3,13 +3,19 @@ ComplianceOS — DOCX Report Builder.
 
 Produces a manager-friendly gap analysis report using python-docx.
 
-Structure:
-  1. Cover page
-  2. Executive Summary
-  3. Single Points of Failure (if any)
-  4. Critical Findings (MAJOR only)
-  5. Action Plan table
-  6. Full Clause Matrix
+Structure (Sprint 4 — 7 sections):
+  Cover page
+  §1 Company Snapshot                      (from executive_summary.company_snapshot)
+  §2 Executive Narrative                   (from executive_summary.executive_narrative)
+  §3 Document Expiry Status                (from expiry_report)
+  §4 Single Points of Failure              (if any)
+  §5 Top 10 Priority Integrations          (from executive_summary.top_priority_integrations)
+  §6 Detailed Clause Analysis              (per-norm: Critical Findings, Action Plan, Clause Matrix)
+  §7 Methodology & Disclaimer
+
+Sections backed by optional fields (executive_summary, expiry_report)
+are skipped silently when those fields are None — older analyses that
+predate Sprint 2/4 still produce a coherent document.
 
 Severity colours (as per DESIGN.md):
   MAJOR       #DC2626  (red)
@@ -31,7 +37,14 @@ from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 from docx.shared import Inches, Pt, RGBColor, Cm
 
-from compliance.schemas import ComplianceAnalysisResult, ClauseGap, NormGapReport
+from compliance.schemas import (
+    ClauseGap,
+    CompanySnapshot,
+    ComplianceAnalysisResult,
+    ExpiredDocument,
+    ExpiryReport,
+    NormGapReport,
+)
 
 
 # ── Colour constants ──────────────────────────────────────────────────────────
@@ -65,8 +78,19 @@ SEVERITY_HEX = {
 
 def build_docx_report(result: ComplianceAnalysisResult) -> bytes:
     """
-    Build a DOCX report from a ComplianceAnalysisResult.
-    Returns the raw bytes of the .docx file.
+    Build a DOCX report from a ComplianceAnalysisResult. Returns the raw
+    bytes of the .docx file.
+
+    Section order (Sprint 4):
+      Cover page
+      §1 Company Snapshot               — executive_summary.company_snapshot
+      §2 Executive Narrative            — executive_summary.executive_narrative
+                                        + legacy per-norm summary block
+      §3 Document Expiry Status         — expiry_report
+      §4 Single Points of Failure       — gaps with is_spof and MAJOR
+      §5 Top 10 Priority Integrations   — executive_summary.top_priority_integrations
+      §6 Detailed Clause Analysis       — Critical Findings, Action Plan, Clause Matrix
+      §7 Methodology & Disclaimer
     """
     doc = Document()
     _configure_document(doc)
@@ -74,16 +98,36 @@ def build_docx_report(result: ComplianceAnalysisResult) -> bytes:
     _add_cover(doc, result)
     doc.add_page_break()
 
+    # §1 Company Snapshot — only when the LLM produced an executive summary
+    if result.executive_summary is not None:
+        _add_company_snapshot(doc, result.executive_summary.company_snapshot)
+        doc.add_page_break()
+
+    # §2 Executive Narrative + legacy per-norm summary
     _add_executive_summary(doc, result)
     doc.add_page_break()
+
+    # §3 Document Expiry Status — only when Phase 2.5 ran and produced output
+    if result.expiry_report is not None and (
+        result.expiry_report.expired_documents or result.expiry_report.expiring_soon
+    ):
+        _add_expiry_section(doc, result.expiry_report)
+        doc.add_page_break()
 
     all_gaps = [g for norm in result.norms for g in norm.clauses]
     spof_gaps = [g for g in all_gaps if g.is_spof and g.severity == "MAJOR"]
 
+    # §4 Single Points of Failure
     if spof_gaps:
         _add_spof_section(doc, spof_gaps)
         doc.add_page_break()
 
+    # §5 Top 10 Priority Integrations — manager-friendly bullet list
+    if result.executive_summary is not None and result.executive_summary.top_priority_integrations:
+        _add_priority_integrations(doc, result.executive_summary.top_priority_integrations)
+        doc.add_page_break()
+
+    # §6 Detailed Clause Analysis
     major_gaps = [g for g in all_gaps if g.severity == "MAJOR"]
     if major_gaps:
         _add_critical_findings(doc, major_gaps)
@@ -96,6 +140,10 @@ def build_docx_report(result: ComplianceAnalysisResult) -> bytes:
 
     for norm_report in result.norms:
         _add_clause_matrix(doc, norm_report)
+        doc.add_page_break()
+
+    # §7 Methodology & Disclaimer (always last)
+    _add_methodology(doc, result)
 
     buf = io.BytesIO()
     doc.save(buf)
@@ -456,3 +504,199 @@ def _add_bottom_border(paragraph) -> None:
     bottom.set(qn("w:color"), "1E293B")
     pBdr.append(bottom)
     pPr.append(pBdr)
+
+
+# ── §1 Company Snapshot (Sprint 4) ───────────────────────────────────────────
+
+def _add_company_snapshot(doc: Document, snap: CompanySnapshot) -> None:
+    _h1(doc, "§1  Company Snapshot")
+
+    table = doc.add_table(rows=0, cols=2)
+    table.style = "Table Grid"
+    _set_col_widths(table, [Inches(1.6), Inches(4.9)])
+
+    def row(label: str, value: str) -> None:
+        r = table.add_row()
+        r.cells[0].text = label
+        run = r.cells[0].paragraphs[0].runs[0]
+        run.font.bold = True
+        run.font.color.rgb = C_GREY
+        run.font.size = Pt(9)
+        _set_cell_bg(r.cells[0], "F8FAFC")
+        r.cells[1].text = value or "—"
+        r.cells[1].paragraphs[0].runs[0].font.size = Pt(10)
+
+    row("Company",   snap.company_name)
+    row("Sector",    snap.sector)
+    row("Size",      snap.size)
+    row("Sites",     snap.sites_summary)
+    row("Standards", ", ".join(snap.certified_standards) if snap.certified_standards else "—")
+
+    if snap.key_roles:
+        r = table.add_row()
+        r.cells[0].text = "Key roles"
+        run = r.cells[0].paragraphs[0].runs[0]
+        run.font.bold = True
+        run.font.color.rgb = C_GREY
+        run.font.size = Pt(9)
+        _set_cell_bg(r.cells[0], "F8FAFC")
+        cell = r.cells[1]
+        cell.text = ""
+        for role in snap.key_roles:
+            p = cell.add_paragraph(f"•  {role}")
+            p.runs[0].font.size = Pt(10)
+
+    doc.add_paragraph()
+    if snap.scope_observations:
+        _h3(doc, "Scope observations")
+        _body(doc, snap.scope_observations)
+
+
+# ── §3 Document Expiry Status (Sprint 4) ─────────────────────────────────────
+
+def _add_expiry_section(doc: Document, report: ExpiryReport) -> None:
+    _h1(doc, "§3  Document Expiry Status")
+
+    _body(doc, (
+        f"As of {report.audit_date}, {len(report.expired_documents)} document"
+        f"{'s' if len(report.expired_documents) != 1 else ''} have expired"
+        f" and {len(report.expiring_soon)} are due to expire within 90 days."
+        f" {report.no_expiry_information} document"
+        f"{'s carry' if report.no_expiry_information != 1 else ' carries'}"
+        f" no expiry information."
+    ))
+
+    if report.expired_documents:
+        _h2(doc, "Expired documents", color=C_MAJOR)
+        _add_expiry_table(doc, report.expired_documents, label="Days overdue")
+
+    if report.expiring_soon:
+        doc.add_paragraph()
+        _h2(doc, "Expiring within 90 days", color=C_MINOR)
+        _add_expiry_table(doc, report.expiring_soon, label="Days until expiry", display_absolute=True)
+
+
+def _add_expiry_table(
+    doc: Document,
+    docs: List[ExpiredDocument],
+    label: str,
+    display_absolute: bool = False,
+) -> None:
+    """Render a list of ExpiredDocument as a coloured table.
+
+    `display_absolute` flips negative days_overdue values (expiring_soon)
+    into positive numbers for readability.
+    """
+    table = doc.add_table(rows=1, cols=5)
+    table.style = "Table Grid"
+    _set_col_widths(table, [Inches(2.7), Inches(1.1), Inches(0.9), Inches(0.8), Inches(1.0)])
+
+    headers = ["File", "Doc type", "Expiry", label, "Severity"]
+    for i, h in enumerate(headers):
+        cell = table.rows[0].cells[i]
+        cell.text = h
+        run = cell.paragraphs[0].runs[0]
+        run.font.bold = True
+        run.font.size = Pt(9)
+        run.font.color.rgb = C_WHITE
+        _set_cell_bg(cell, "1E293B")
+
+    for idx, d in enumerate(docs):
+        r = table.add_row()
+        days_value = abs(d.days_overdue) if display_absolute else d.days_overdue
+        vals = [
+            _last_path_segment(d.file_name),
+            d.doc_type,
+            d.expiry_date,
+            str(days_value),
+            d.severity,
+        ]
+        for j, v in enumerate(vals):
+            r.cells[j].text = v
+            run = r.cells[j].paragraphs[0].runs[0]
+            run.font.size = Pt(9)
+
+        sev_color = SEVERITY_COLOR.get(d.severity, C_DARK)
+        # Severity cell highlighted
+        r.cells[4].paragraphs[0].runs[0].font.bold = True
+        r.cells[4].paragraphs[0].runs[0].font.color.rgb = sev_color
+
+        # Row tint by severity
+        row_bg = "FEF2F2" if d.severity == "MAJOR" else "FFF7ED" if d.severity == "MINOR" else "FEFCE8" if d.severity == "OBSERVATION" else "F8FAFC"
+        for cell in r.cells:
+            _set_cell_bg(cell, row_bg)
+
+
+def _last_path_segment(path: str) -> str:
+    """Trim 'CONSORZIO JEOCON 14001/ALLEGATI/foo.pdf' to 'foo.pdf' for the table."""
+    if not path:
+        return ""
+    p = path.replace("\\", "/")
+    return p.rsplit("/", 1)[-1] if "/" in p else p
+
+
+# ── §5 Top 10 Priority Integrations (Sprint 4) ───────────────────────────────
+
+def _add_priority_integrations(doc: Document, integrations: List[str]) -> None:
+    _h1(doc, "§5  Top Priority Integrations")
+
+    _body(doc, (
+        "The following actions, in order of priority, are the recommended next "
+        "steps. Each item references the underlying clause or expired document."
+    ))
+
+    items = integrations[:10]
+    for i, action in enumerate(items, 1):
+        p = doc.add_paragraph()
+        idx_run = p.add_run(f"{i}.  ")
+        idx_run.font.bold = True
+        idx_run.font.color.rgb = C_DARK
+        idx_run.font.size = Pt(11)
+
+        body_run = p.add_run(action)
+        body_run.font.size = Pt(10)
+        p.paragraph_format.space_after = Pt(6)
+
+
+# ── §7 Methodology & Disclaimer (Sprint 4) ───────────────────────────────────
+
+def _add_methodology(doc: Document, result: ComplianceAnalysisResult) -> None:
+    _h1(doc, "§7  Methodology & Disclaimer")
+
+    _h2(doc, "How this report was produced")
+    _body(doc, (
+        f"This analysis was generated by ComplianceOS, an advisory tool that "
+        f"reads documentation packages and maps the evidence against the "
+        f"requirements of selected ISO management system standards. "
+        f"For this report, {result.documents_analyzed} document"
+        f"{'s were' if result.documents_analyzed != 1 else ' was'} processed "
+        f"across "
+        f"{', '.join(n.norm for n in result.norms)}."
+    ))
+    _body(doc, (
+        "The pipeline runs in five stages: document extraction (with OCR "
+        "fallback for scanned files), structured evidence-card extraction, "
+        "deterministic expiry checking, clause-by-clause gap analysis grounded "
+        "on the retrieved evidence, and report composition. Every finding in "
+        "this report is tied to the underlying evidence cards via traceable "
+        "references; citations are verified against the index post-generation."
+    ))
+
+    _h2(doc, "Limits of this analysis")
+    _body(doc, (
+        "ComplianceOS is an advisory tool, not a certification service. It "
+        "summarises documented evidence in the package provided and flags "
+        "where requirements appear unmet. It does not interview personnel, "
+        "observe processes on site, or examine documents outside the package. "
+        "Operational practice may differ from documentation; an accredited "
+        "certification body remains the only authority on conformity."
+    ))
+
+    _h2(doc, "Severity ladder")
+    _body(doc, (
+        "MAJOR — requirement absent, or evidence so incomplete it cannot "
+        "support conformity; or a Single Point of Failure with low score. "
+        "MINOR — requirement partially met; documented but with material gaps. "
+        "OBSERVATION — improvement opportunity, no mandatory action. "
+        "CONFORMANT — evidence present, current, and complete."
+    ))

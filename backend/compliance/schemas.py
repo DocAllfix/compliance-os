@@ -79,6 +79,24 @@ class ExpiryReport(BaseModel):
     no_expiry_information: int                   # count of cards with no expiry_date
 
 
+class CompanySnapshot(BaseModel):
+    """Section 1 of the manager-facing report (executive summary)."""
+    company_name: str
+    sector: str
+    size: str
+    sites_summary: str
+    key_roles: List[str]              # e.g. ["RSPP: Mario Rossi", "Quality Manager: Anna Bianchi"]
+    certified_standards: List[str]    # certified or under analysis
+    scope_observations: str
+
+
+class ExecutiveSummary(BaseModel):
+    """Phase 4 LLM output, attached to ComplianceAnalysisResult."""
+    company_snapshot: CompanySnapshot
+    top_priority_integrations: List[str]   # ordered, max 10, action-verb sentences
+    executive_narrative: str               # 3-4 paragraphs, UK English
+
+
 class ComplianceAnalysisResult(BaseModel):
     analysis_id: str
     company: str
@@ -86,5 +104,6 @@ class ComplianceAnalysisResult(BaseModel):
     analysis_date: str
     norms: List[NormGapReport]
     documents_analyzed: int
-    top_gaps: List[ClauseGap]                    # top 5 Major/SPoF cross-norma
-    expiry_report: Optional[ExpiryReport] = None # Phase 2.5 output (optional)
+    top_gaps: List[ClauseGap]                            # top 5 Major/SPoF cross-norma
+    expiry_report: Optional[ExpiryReport] = None         # Phase 2.5 output (optional)
+    executive_summary: Optional[ExecutiveSummary] = None # Phase 4 LLM output (optional)
