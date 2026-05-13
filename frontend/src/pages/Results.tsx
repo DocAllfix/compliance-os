@@ -1,25 +1,31 @@
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useAnalysis } from '@/lib/hooks';
-import type { ClauseGap } from '@/lib/api';
+import { compliance, triggerBrowserDownload, ApiError } from '@/lib/api';
+import type { ClauseGap, RemediationPlan, TraceabilityLink } from '@/lib/api';
 import { CompanySnapshotCard } from '@/pages/results/CompanySnapshotCard';
 import { ExecutiveNarrative } from '@/pages/results/ExecutiveNarrative';
 import { ExpiryTable } from '@/pages/results/ExpiryTable';
 import { PriorityIntegrationsList } from '@/pages/results/PriorityIntegrationsList';
 
+// Sprint G.1: Finding interface estesa con i dati REALI di ClauseGap
+// (excerpt, pages, remediation). Niente più stub statico nell'expand.
 interface Finding {
-  clauseId: string;
+  clauseId: string;        // human-readable, es. "45001 §10.2"
   title: string;
-  severity: 'major' | 'minor' | 'obs';
+  severity: 'major' | 'minor' | 'obs' | 'conf';
   isSpof?: boolean;
-  text: string;
-  source: { file: string; page?: string };
+  text: string;            // il "finding" del ClauseGap (max ~150 parole)
+  sources: TraceabilityLink[];  // tutte le sources, non solo la prima
+  remediation: RemediationPlan;
 }
 
 function mapClause(c: ClauseGap): Finding {
   const sev: Finding['severity'] =
-    c.severity === 'MAJOR' ? 'major' : c.severity === 'MINOR' ? 'minor' : 'obs';
-  const src = c.sources[0];
+    c.severity === 'MAJOR' ? 'major'
+    : c.severity === 'MINOR' ? 'minor'
+    : c.severity === 'CONFORMANT' ? 'conf'
+    : 'obs';
   return {
     clauseId: c.clause_id.replace(/^(\d+)_(\d+)(?:_(\d+))?$/i, (_m, std, sec, sub) =>
       sub ? `${std} §${sec}.${sub}` : `${std} §${sec}`,
@@ -28,9 +34,8 @@ function mapClause(c: ClauseGap): Finding {
     severity: sev,
     isSpof: c.is_spof,
     text: c.finding,
-    source: src
-      ? { file: src.file_name, page: src.pages?.[0] ? `p${src.pages[0]}` : undefined }
-      : { file: '' },
+    sources: c.sources ?? [],
+    remediation: c.remediation,
   };
 }
 
@@ -52,8 +57,30 @@ function FileIcon() {
   );
 }
 
+// Sprint G.1: helper UI per le sources (filename + opzionale "p.N, N")
+function lastPathSegment(path: string): string {
+  if (!path) return '';
+  const normalised = path.replace(/\\/g, '/');
+  const i = normalised.lastIndexOf('/');
+  return i >= 0 ? normalised.slice(i + 1) : normalised;
+}
+
+function pagesLabel(pages: number[] | undefined): string {
+  if (!pages || pages.length === 0) return '';
+  if (pages.length === 1) return `p. ${pages[0]}`;
+  return `p. ${pages.slice(0, 3).join(', ')}${pages.length > 3 ? '…' : ''}`;
+}
+
+function effortLabel(effort: RemediationPlan['effort']): string {
+  if (effort === 'HIGH') return 'High';
+  if (effort === 'MEDIUM') return 'Medium';
+  return 'Low';
+}
+
 function FindingCard({ f, defaultExpanded = false }: { f: Finding; defaultExpanded?: boolean }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
+  const firstSource = f.sources[0];
+  const headerPage = pagesLabel(firstSource?.pages);
   return (
     <article className={`finding${expanded ? ' expanded' : ''}`}>
       <div className="finding-head">
@@ -62,6 +89,7 @@ function FindingCard({ f, defaultExpanded = false }: { f: Finding; defaultExpand
         )}
         {f.severity === 'minor' && <span className="badge badge-minor">Minor</span>}
         {f.severity === 'obs' && <span className="badge badge-obs">Obs.</span>}
+        {f.severity === 'conf' && <span className="badge badge-conf">Conformant</span>}
         {f.isSpof && (
           <span className="spof-badge">
             <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
@@ -74,10 +102,13 @@ function FindingCard({ f, defaultExpanded = false }: { f: Finding; defaultExpand
       </div>
       <h2 className="finding-title">{f.title}</h2>
       <p className="finding-text">{f.text}</p>
-      <a className="finding-source" href="#" onClick={(e) => e.preventDefault()}>
-        <FileIcon />
-        {f.source.file} {f.source.page && <span className="page">· {f.source.page}</span>}
-      </a>
+      {firstSource && (
+        <span className="finding-source">
+          <FileIcon />
+          {lastPathSegment(firstSource.file_name)}
+          {headerPage && <span className="page"> · {headerPage}</span>}
+        </span>
+      )}
       <button className="finding-toggle" onClick={() => setExpanded(!expanded)}>
         <span className="label-collapsed">Show evidence and remediation</span>
         <span className="label-expanded">Hide evidence and remediation</span>
@@ -85,29 +116,47 @@ function FindingCard({ f, defaultExpanded = false }: { f: Finding; defaultExpand
       </button>
       {expanded && (
         <div className="finding-detail">
-          <div className="pdf-excerpt">
-            <span className="pdf-excerpt-meta">
-              <FileIcon />
-              {f.source.file} · page {f.source.page?.replace('p', '') ?? '?'}
-            </span>
-            <div className="pdf-excerpt-body">
-              <h4>Excerpt</h4>
-              <p><span className="highlight">L'azienda mantiene aggiornato un elenco delle prescrizioni legali applicabili alle proprie attività, prodotti e servizi.</span> L'elenco viene rivisto in caso di cambiamenti normativi o operativi.</p>
+          {/* Sprint G.1: excerpts REALI dalle sources del backend.
+              Nessuna stub italiana hard-coded. Se non ci sono sources, la
+              sezione excerpt viene omessa e mostriamo solo la remediation. */}
+          {f.sources.length > 0 ? (
+            <div className="evidence-stack">
+              {f.sources.slice(0, 3).map((src, i) => {
+                const pageLbl = pagesLabel(src.pages);
+                const excerpt = (src.excerpt || '').trim();
+                return (
+                  <div key={src.evidence_id || i} className="pdf-excerpt">
+                    <span className="pdf-excerpt-meta">
+                      <FileIcon />
+                      {lastPathSegment(src.file_name)}
+                      {pageLbl && <span className="page"> · {pageLbl}</span>}
+                    </span>
+                    {excerpt ? (
+                      <div className="pdf-excerpt-body">
+                        <h4>Excerpt</h4>
+                        <p>{excerpt}</p>
+                      </div>
+                    ) : (
+                      <div className="pdf-excerpt-empty">
+                        No verbatim excerpt was indexed for this evidence card.
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+              {f.sources.length > 3 && (
+                <div className="evidence-more">
+                  + {f.sources.length - 3} more source{f.sources.length - 3 === 1 ? '' : 's'} cited in the full report.
+                </div>
+              )}
             </div>
-            <div className="pdf-actions">
-              <a className="pdf-action-link" href="#" onClick={(e) => e.preventDefault()}>
-                <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /><polyline points="15 3 21 3 21 9" /><line x1="10" y1="14" x2="21" y2="3" /></svg>
-                Open full document
-              </a>
+          ) : (
+            <div className="evidence-none">
+              No evidence was cited for this clause — the verdict was reached because no
+              pertinent documentation was retrieved from the package.
             </div>
-          </div>
-          <div className="gap-explainer">
-            <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10" /><path d="M12 8v4" /><path d="M12 16h.01" /></svg>
-            <div>
-              <span className="gap-explainer-label">Why this is a gap</span>
-              <p>The policy <strong>commits to maintaining</strong> a legal register but no register document is part of this submission. Clause 6.1.3 requires the register itself.</p>
-            </div>
-          </div>
+          )}
+
           <div className="remediation">
             <div className="remediation-header">
               <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="20 6 9 17 4 12" /></svg>
@@ -115,13 +164,17 @@ function FindingCard({ f, defaultExpanded = false }: { f: Finding; defaultExpand
             </div>
             <div className="rem-grid">
               <div className="rem-label">Action</div>
-              <div className="rem-value">Establish a formal compliance obligations register listing all applicable environmental regulations, monitoring frequencies, evaluation outcomes, and review dates.</div>
+              <div className="rem-value">{f.remediation.what}</div>
               <div className="rem-label">Owner</div>
-              <div className="rem-value"><b>HSE Manager</b>, with input from Operations Director and Legal Counsel.</div>
+              <div className="rem-value"><b>{f.remediation.who}</b></div>
               <div className="rem-label">Timescale</div>
-              <div className="rem-value"><b>30 days</b> for an initial draft. <b>90 days</b> for a fully populated register.</div>
+              <div className="rem-value"><b>{f.remediation.when}</b></div>
               <div className="rem-label">Effort</div>
-              <div className="rem-value"><span className="rem-pill">High</span></div>
+              <div className="rem-value">
+                <span className={`rem-pill rem-pill-${f.remediation.effort.toLowerCase()}`}>
+                  {effortLabel(f.remediation.effort)}
+                </span>
+              </div>
             </div>
           </div>
         </div>
@@ -129,6 +182,53 @@ function FindingCard({ f, defaultExpanded = false }: { f: Finding; defaultExpand
     </article>
   );
 }
+
+/**
+ * Sprint G.3: button Download che chiama il backend con auth header
+ * via fetch+Blob. Sostituisce l'href statico che causava 401.
+ *
+ * Stati gestiti: idle / downloading / error. L'errore appare inline come
+ * tooltip + classe `btn-error`, niente toast / alert popup.
+ */
+function DownloadReportButton({ analysisId }: { analysisId: string }) {
+  const [state, setState] = useState<'idle' | 'downloading' | 'error'>('idle');
+  const [errMsg, setErrMsg] = useState<string | null>(null);
+
+  const handleClick = async () => {
+    if (state === 'downloading') return;
+    setState('downloading');
+    setErrMsg(null);
+    try {
+      const { blob, filename } = await compliance.downloadReport(analysisId);
+      triggerBrowserDownload(blob, filename);
+      setState('idle');
+    } catch (e) {
+      const msg = e instanceof ApiError ? `${e.status} ${e.message}` : (e as Error).message;
+      setErrMsg(msg);
+      setState('error');
+      // Reset to idle dopo 4s così il bottone torna cliccabile
+      window.setTimeout(() => setState('idle'), 4000);
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      className={`btn btn-link${state === 'error' ? ' btn-error' : ''}`}
+      title={state === 'error' ? errMsg ?? 'Download failed' : 'Download the gap analysis report (DOCX)'}
+      disabled={state === 'downloading'}
+    >
+      <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+        <polyline points="7 10 12 15 17 10" />
+        <line x1="12" y1="15" x2="12" y2="3" />
+      </svg>
+      {state === 'downloading' ? 'Downloading…' : state === 'error' ? 'Download failed' : 'Download'}
+    </button>
+  );
+}
+
 
 function EmptyState() {
   return (
@@ -202,7 +302,6 @@ export function Results() {
     { major: 0, minor: 0, obs: 0, conf: 0, spof: 0 },
   );
 
-  const downloadHref = `${import.meta.env.VITE_API_BASE_URL ?? ''}/api/compliance/analyses/${id}/download`;
   const hasExpiry =
     result.expiry_report &&
     (result.expiry_report.expired_documents.length > 0 ||
@@ -250,10 +349,7 @@ export function Results() {
               </svg>
               Ask the analyst
             </Link>
-            <a href={downloadHref} className="btn btn-link" target="_blank" rel="noopener noreferrer">
-              <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
-              Download
-            </a>
+            <DownloadReportButton analysisId={id!} />
           </div>
         </div>
       </header>

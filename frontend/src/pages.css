@@ -2288,3 +2288,50 @@
     color: var(--text-tertiary);
     border-radius: 3px;
   }
+
+  /* ─── Sprint G.1: FindingCard expand data-driven ─── */
+  .badge-conf {
+    background: var(--severity-conformant-bg);
+    color: var(--severity-conformant);
+  }
+  .evidence-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .evidence-more {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-tertiary);
+    padding: 6px 12px;
+    background: var(--bg-elevated);
+    border-radius: 4px;
+  }
+  .evidence-none {
+    padding: 14px 16px;
+    background: var(--bg-elevated);
+    border-left: 3px solid var(--severity-major);
+    color: var(--text-secondary);
+    font-size: 13px;
+    line-height: 1.55;
+    border-radius: 0 6px 6px 0;
+    margin-bottom: 16px;
+  }
+  .pdf-excerpt-empty {
+    padding: 8px 12px;
+    font-size: 12px;
+    color: var(--text-tertiary);
+    font-style: italic;
+  }
+  .rem-pill-high   { background: var(--severity-major-bg);  color: var(--severity-major); }
+  .rem-pill-medium { background: var(--severity-minor-bg);  color: var(--severity-minor); }
+  .rem-pill-low    { background: var(--severity-conformant-bg); color: var(--severity-conformant); }
+
+  /* ─── Sprint G.3: download buttons error state ─── */
+  .btn-error {
+    color: var(--severity-major) !important;
+    border-color: var(--severity-major) !important;
+    background: var(--severity-major-bg) !important;
+  }
+  .btn-error:hover { opacity: 0.85; }

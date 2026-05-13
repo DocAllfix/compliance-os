@@ -198,7 +198,6 @@ export interface ChatResponse {
 export const compliance = {
   listAnalyses: () => request<AnalysisSummary[]>('/api/compliance/analyses'),
   getAnalysis: (id: string) => request<AnalysisDetail>(`/api/compliance/analyses/${id}`),
-  downloadReportUrl: (id: string) => `${BASE}/api/compliance/analyses/${id}/download`,
   updateAction: (id: string, clauseId: string, status: ActionStatus, notes?: string) =>
     request<{ ok: boolean }>(`/api/compliance/analyses/${id}/actions/${clauseId}`, {
       method: 'PATCH',
@@ -209,7 +208,52 @@ export const compliance = {
       method: 'POST',
       body: JSON.stringify(req),
     }),
+
+  /**
+   * Sprint G.3: download report DOCX con auth.
+   *
+   * Il vecchio `downloadReportUrl(id)` produceva un href statico che il
+   * browser apriva senza header Authorization → 401. Ora facciamo fetch
+   * con il Bearer token e scarichiamo il blob via object URL.
+   *
+   * Suggested filename viene dal Content-Disposition se presente, altrimenti
+   * fallback su un nome derivato dall'id.
+   */
+  downloadReport: async (id: string): Promise<{ blob: Blob; filename: string }> => {
+    const res = await fetch(`${BASE}/api/compliance/analyses/${id}/download`, {
+      headers: { ...authHeader() },
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 401) {
+        window.localStorage.removeItem(TOKEN_KEY);
+      }
+      throw new ApiError(res.status, (data as { detail?: string }).detail ?? res.statusText, data);
+    }
+    const blob = await res.blob();
+    // Estrai filename dal Content-Disposition se c'è
+    const disp = res.headers.get('Content-Disposition') ?? '';
+    const m = disp.match(/filename="?([^"]+)"?/i);
+    const filename = m?.[1] ?? `ComplianceOS_Report_${id.slice(0, 12)}.docx`;
+    return { blob, filename };
+  },
 };
+
+/**
+ * Sprint G.3: helper UI per triggerare il download nel browser
+ * a partire da un blob ottenuto via fetch autenticato.
+ */
+export function triggerBrowserDownload(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  // Revoca dopo un tick per evitare che il browser annulli il download
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
 
 // ── SSE pipeline ────────────────────────────────────────────────────────
 export interface SseProgress {

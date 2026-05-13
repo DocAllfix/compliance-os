@@ -21,6 +21,7 @@ import logging
 import os
 import re
 import time
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -50,14 +51,22 @@ def _extract_documents(zip_bytes: bytes, emit: Callable) -> List[Dict[str, Any]]
             names = [n for n in zf.namelist() if not n.endswith("/")]
             emit(8.0, f"Found {len(names)} files in archive.")
 
-            for name in names:
+            for raw_name in names:
+                # Sprint G.2: i ZIP creati su macOS spesso salvano i nomi file in
+                # UTF-8 NFD (Normalization Form Decomposed): la "à" diventa la
+                # sequenza "a" + U+0300 (combining grave accent). Su Windows
+                # alcuni renderer la corrompono in "╠Ç" o simili. Normalizziamo
+                # a NFC per ricomporre i caratteri precomposti standard.
+                display_name = unicodedata.normalize("NFC", raw_name)
                 try:
-                    raw = zf.read(name)
-                    content = _read_file_content(name, raw)
+                    # zf.read() vuole il nome internamente registrato (raw_name),
+                    # ma quello che propaghiamo a Phase 2/3/UI è la versione NFC.
+                    raw = zf.read(raw_name)
+                    content = _read_file_content(display_name, raw)
                     if content:
-                        docs.append({"filename": name, "content": content})
+                        docs.append({"filename": display_name, "content": content})
                 except Exception as e:
-                    emit(8.0, f"Warning: could not read {name}: {e}")
+                    emit(8.0, f"Warning: could not read {display_name}: {e}")
 
     except Exception as e:
         emit(5.0, f"Archive extraction failed: {e}")

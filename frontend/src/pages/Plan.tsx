@@ -12,6 +12,7 @@
 import { useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useAnalysis, useUpdateAction } from '@/lib/hooks';
+import { compliance, triggerBrowserDownload, ApiError } from '@/lib/api';
 import type { ActionStatus, ClauseGap } from '@/lib/api';
 
 type Status = 'open' | 'in-progress' | 'closed';
@@ -114,6 +115,50 @@ function ActionCard({ a, onUpdate }: { a: PlanAction; onUpdate: (clauseId: strin
   );
 }
 
+/**
+ * Sprint G.3: stesso pattern fetch+Blob auth per "Export plan".
+ * Per ora il payload è il DOCX completo (riusa /download). Un plan-only DOCX
+ * è un futuro backend ticket.
+ */
+function ExportPlanButton({ analysisId }: { analysisId: string }) {
+  const [state, setState] = useState<'idle' | 'downloading' | 'error'>('idle');
+  const [errMsg, setErrMsg] = useState<string | null>(null);
+
+  const handleClick = async () => {
+    if (state === 'downloading') return;
+    setState('downloading');
+    setErrMsg(null);
+    try {
+      const { blob, filename } = await compliance.downloadReport(analysisId);
+      triggerBrowserDownload(blob, filename);
+      setState('idle');
+    } catch (e) {
+      const msg = e instanceof ApiError ? `${e.status} ${e.message}` : (e as Error).message;
+      setErrMsg(msg);
+      setState('error');
+      window.setTimeout(() => setState('idle'), 4000);
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      className={`btn btn-secondary${state === 'error' ? ' btn-error' : ''}`}
+      title={state === 'error' ? errMsg ?? 'Export failed' : 'Export the gap analysis report (DOCX)'}
+      disabled={state === 'downloading'}
+    >
+      <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+        <polyline points="7 10 12 15 17 10" />
+        <line x1="12" y1="15" x2="12" y2="3" />
+      </svg>
+      {state === 'downloading' ? 'Exporting…' : state === 'error' ? 'Export failed' : 'Export plan'}
+    </button>
+  );
+}
+
+
 export function Plan() {
   const { id } = useParams();
   const analysisQuery = useAnalysis(id);
@@ -198,15 +243,7 @@ export function Plan() {
           </div>
         </div>
         <div className="header-right">
-          <a
-            href={`${import.meta.env.VITE_API_BASE_URL ?? ''}/api/compliance/analyses/${id}/download`}
-            className="btn btn-secondary"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
-            Export plan
-          </a>
+          <ExportPlanButton analysisId={id!} />
         </div>
       </header>
 
