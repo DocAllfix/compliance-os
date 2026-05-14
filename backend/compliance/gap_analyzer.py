@@ -139,6 +139,13 @@ def analyze_compliance(
     cards = _parse_evidence_yaml(evidence_yaml)
     emit(10.0, f"Indexed {len(cards)} evidence cards. Embedding…")
 
+    # Sprint H.1: keep an evidence_id → card map so that TraceabilityLink can
+    # surface the *verbatim* excerpts[0].text and the LLM summary distinctly,
+    # rather than the concatenated blob that ChromaDB indexes for retrieval.
+    cards_by_id: Dict[str, Dict[str, Any]] = {
+        str(c.get("evidence_id", "")): c for c in cards if c.get("evidence_id")
+    }
+
     embedder = EvidenceEmbedder(analysis_id)
     indexed = embedder.index_evidence_cards(cards)
     emit(15.0, f"Embedded {indexed} cards. Starting gap analysis…")
@@ -165,6 +172,7 @@ def analyze_compliance(
         evidence_service=evidence_service,
         company_context=company_context,
         emit=emit,
+        cards_by_id=cards_by_id,
     )
 
     evidence_service.close()  # no-op when non-owning (see EvidenceService docs)
@@ -196,6 +204,7 @@ def _analyse_norms_parallel(
     evidence_service: EvidenceService,
     company_context: CompanyContext,
     emit: Callable,
+    cards_by_id: Dict[str, Dict[str, Any]],
 ) -> List[NormGapReport]:
     """
     Run gap analysis for all requested norms in parallel using a thread pool.
@@ -219,6 +228,7 @@ def _analyse_norms_parallel(
             emit=emit,
             pct_base=15.0,
             pct_budget=70.0,
+            cards_by_id=cards_by_id,
         )
         return [_build_norm_report(norm, gaps)]
 
@@ -238,6 +248,7 @@ def _analyse_norms_parallel(
             emit=emit,
             pct_base=15.0 + norm_idx * pct_per_norm,
             pct_budget=pct_per_norm,
+            cards_by_id=cards_by_id,
         )
         results[norm] = _build_norm_report(norm, gaps)
 
@@ -277,6 +288,7 @@ def _analyse_norm(
     emit: Callable,
     pct_base: float,
     pct_budget: float,
+    cards_by_id: Dict[str, Dict[str, Any]],
 ) -> List[ClauseGap]:
     clause_list = _sort_clauses_by_criticality(list(clauses.values()))
 
@@ -309,6 +321,7 @@ def _analyse_norm(
         gaps = _analyse_clauses_batched(
             clause_evidences=clause_evidences,
             norm_prompt=norm_prompt,
+            cards_by_id=cards_by_id,
         )
         results[batch_idx] = gaps
 
@@ -330,6 +343,7 @@ def _analyse_norm(
 def _analyse_clauses_batched(
     clause_evidences: List[tuple],  # [(clause, [evidence]), …]
     norm_prompt: str,
+    cards_by_id: Dict[str, Dict[str, Any]],
 ) -> List[ClauseGap]:
     """
     Send N clauses to the LLM in a single call. Parse the array response.
@@ -370,7 +384,7 @@ def _analyse_clauses_batched(
             gaps.append(_fallback_clause_gap(clause, "clause missing from batch response"))
             continue
 
-        gap = _parse_batch_clause_gap(item, clause, evidence_list)
+        gap = _parse_batch_clause_gap(item, clause, evidence_list, cards_by_id)
         gap = _apply_severity_floor(gap, clause, evidence_list)
         gaps.append(gap)
 
@@ -492,6 +506,7 @@ def _parse_batch_clause_gap(
     data: Dict[str, Any],
     clause: Dict[str, Any],
     evidence_list: List[Dict[str, Any]],
+    cards_by_id: Dict[str, Dict[str, Any]],
 ) -> ClauseGap:
     """
     Parse one clause verdict from the batch response.
@@ -500,7 +515,13 @@ def _parse_batch_clause_gap(
     must exist in this clause's `evidence_list`. IDs not found are discarded
     and a warning is logged. If filtering empties the citation list, the
     severity is escalated to at least the clause's severity_floor.
+
+    Sprint H.1: TraceabilityLink.excerpt now carries the verbatim quote from
+    the document (Q12: `card.excerpts[0].text`) and TraceabilityLink.summary
+    carries the LLM descriptive summary (Q11: `card.summary`). Both are
+    truncated with word-safe boundaries so they never end mid-word.
     """
+    from compliance._text_utils import truncate_word_safe
     # Build the verifier set from the evidence we actually passed in
     valid_ids = {ev.get("evidence_id", "") for ev in evidence_list if ev.get("evidence_id")}
 
@@ -525,17 +546,43 @@ def _parse_batch_clause_gap(
             f"{hallucinated[:5]}{'…' if len(hallucinated) > 5 else ''}"
         )
 
-    # Build TraceabilityLink only for valid citations, hydrating from evidence_list
+    # Build TraceabilityLink only for valid citations.
+    # Sprint H.1: hydrate from the ORIGINAL card (cards_by_id) so we can show
+    # the verbatim excerpt (Q12) and the LLM summary (Q11) as distinct fields,
+    # not the concatenated blob ChromaDB indexes for retrieval.
     ev_by_id = {ev.get("evidence_id", ""): ev for ev in evidence_list}
     sources: List[TraceabilityLink] = []
     for eid in valid_citations:
         ev = ev_by_id.get(eid, {})
+        card = cards_by_id.get(eid, {})
+
+        # Verbatim quote: prefer the first card.excerpts[].text (Q12), fall
+        # back to whatever the retrieval brought back if the card has none.
+        verbatim_raw = ""
+        card_excerpts = card.get("excerpts") or []
+        if card_excerpts and isinstance(card_excerpts[0], dict):
+            verbatim_raw = str(card_excerpts[0].get("text", "") or "")
+        if not verbatim_raw:
+            verbatim_raw = str(ev.get("excerpt", "") or "")
+
+        # Pages: prefer the card excerpts[0].pages, fall back to retrieval meta
+        pages = []
+        if card_excerpts and isinstance(card_excerpts[0], dict):
+            pages = list(card_excerpts[0].get("pages", []) or [])
+        if not pages:
+            pages = list(ev.get("pages", []) or [])
+
+        # LLM summary (Q11): only attach if non-empty and not "no gap" boilerplate
+        summary_raw = str(card.get("summary", "") or "").strip()
+        summary_clean = truncate_word_safe(summary_raw, 280) if summary_raw else None
+
         sources.append(TraceabilityLink(
             evidence_id=eid,
-            file_name=str(ev.get("file_name", "")),
-            pages=list(ev.get("pages", []) or []),
-            excerpt=str(ev.get("excerpt", ""))[:300],
+            file_name=str(ev.get("file_name", "") or card.get("file_name", "")),
+            pages=pages,
+            excerpt=truncate_word_safe(verbatim_raw, 280),
             relevance_score=float(ev.get("relevance_score", 0.5)),
+            summary=summary_clean,
         ))
 
     # Severity normalisation

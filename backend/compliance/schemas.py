@@ -17,8 +17,9 @@ class TraceabilityLink(BaseModel):
     evidence_id: str
     file_name: str
     pages: List[int]
-    excerpt: str
+    excerpt: str                       # verbatim quote from the document (Q12)
     relevance_score: float
+    summary: Optional[str] = None      # LLM descriptive summary of the document (Q11)
 
 
 class RemediationPlan(BaseModel):

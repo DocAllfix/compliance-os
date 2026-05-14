@@ -2324,6 +2324,30 @@
     color: var(--text-tertiary);
     font-style: italic;
   }
+  /* Sprint H.1: LLM descriptive summary, shown below the verbatim excerpt.
+     Visually subordinate — sans-serif, smaller, tertiary tone — so the user's
+     eye lands on the literal quote first and the summary is supporting context. */
+  .pdf-excerpt-summary {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px dashed var(--border-subtle);
+  }
+  .pdf-excerpt-summary-label {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+    margin-bottom: 4px;
+  }
+  .pdf-excerpt-summary p {
+    margin: 0;
+    font-family: var(--font-sans);
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: var(--text-tertiary);
+  }
   .rem-pill-high   { background: var(--severity-major-bg);  color: var(--severity-major); }
   .rem-pill-medium { background: var(--severity-minor-bg);  color: var(--severity-minor); }
   .rem-pill-low    { background: var(--severity-conformant-bg); color: var(--severity-conformant); }

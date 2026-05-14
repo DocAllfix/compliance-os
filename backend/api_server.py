@@ -1406,25 +1406,35 @@ async def compliance_chat(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Could not parse analysis result: {e}")
 
-    # 2) Reconstruct evidence cards from the citations in the result
-    #    Each ClauseGap.sources entry is already a TraceabilityLink — we
-    #    convert these into card-shaped dicts the EvidenceService can index.
+    # 2) Reconstruct evidence cards from the citations in the result.
+    # Each ClauseGap.sources entry is already a TraceabilityLink — we convert
+    # these into card-shaped dicts the EvidenceService can index.
+    # Sprint H.2: defensively coerce every value to a serialisable primitive
+    # so ChromaDB's metadata validation (which rejects None and unexpected
+    # types) cannot crash the request.
     seen_ids: set = set()
     cards: List[Dict[str, Any]] = []
     for norm in result.norms:
         for clause in norm.clauses:
             for src in clause.sources:
-                if src.evidence_id in seen_ids:
+                eid = str(src.evidence_id or "")
+                if not eid or eid in seen_ids:
                     continue
-                seen_ids.add(src.evidence_id)
+                seen_ids.add(eid)
+                verbatim = str(src.excerpt or "")
+                # Prefer src.summary (Sprint H.1) for the descriptive blob the
+                # embedder will use as searchable text; fall back to verbatim.
+                descriptive = str(getattr(src, "summary", None) or verbatim)
                 cards.append({
-                    "evidence_id":       src.evidence_id,
-                    "file_name":         src.file_name,
-                    "doc_type":          "other",  # not stored on TraceabilityLink
-                    "iso_clause_primary": clause.clause_id,
-                    "gap_signal":        clause.severity in ("MAJOR", "MINOR"),
-                    "summary":           src.excerpt,
-                    "excerpts":          [{"text": src.excerpt}],
+                    "evidence_id":        eid,
+                    "file_name":          str(src.file_name or ""),
+                    "doc_type":           "other",
+                    "iso_clause_primary": str(clause.clause_id or ""),
+                    "gap_signal":         bool(clause.severity in ("MAJOR", "MINOR")),
+                    "confidence":         0.5,
+                    "summary":            descriptive,
+                    "gap_detail":         "",
+                    "excerpts":           [{"text": verbatim, "pages": list(src.pages or [])}],
                 })
 
     if not cards:
@@ -1440,10 +1450,37 @@ async def compliance_chat(
             sources=[],
         )
 
-    # 3) Index in-process and retrieve top-K for the query
-    service = EvidenceService.from_cards(analysis_id=req.analysis_id, cards=cards)
+    # 3) Index in-process and retrieve top-K for the query.
+    # Sprint H.2: wrap with explicit logging — prior to this, a silent crash in
+    # from_cards or get_evidences_similar_to surfaced as a generic 500 with no
+    # stack trace in the uvicorn log, making the failure mode invisible.
+    import traceback as _tb
+    _chat_log = logging.getLogger("compliance.chat")
     try:
-        retrieved = service.get_evidences_similar_to(req.query, n=6)
+        service = EvidenceService.from_cards(analysis_id=req.analysis_id, cards=cards)
+    except Exception as e:
+        _chat_log.error(
+            "[Compliance chat] EvidenceService.from_cards failed for analysis %s "
+            "(cards=%d): %s\n%s",
+            req.analysis_id, len(cards), e, _tb.format_exc(),
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not index evidence for chat: {str(e)[:200]}",
+        )
+
+    try:
+        try:
+            retrieved = service.get_evidences_similar_to(req.query, n=6)
+        except Exception as e:
+            _chat_log.error(
+                "[Compliance chat] retrieval failed for analysis %s on query %r: %s\n%s",
+                req.analysis_id, req.query[:120], e, _tb.format_exc(),
+            )
+            raise HTTPException(
+                status_code=500,
+                detail=f"Retrieval failed: {str(e)[:200]}",
+            )
 
         # 4) Build prompt
         chat_prompt_path = _Path(__file__).parent / "prompts" / "compliance" / "chat_grounded.md"
@@ -1509,6 +1546,10 @@ async def compliance_chat(
         try:
             response_text = _call_chat_llm(sys_prompt, user_prompt, max_tokens=800)
         except Exception as e:
+            _chat_log.error(
+                "[Compliance chat] LLM call failed for analysis %s: %s\n%s",
+                req.analysis_id, e, _tb.format_exc(),
+            )
             raise HTTPException(status_code=502, detail=f"Both LLM providers failed: {e}")
 
         if not response_text:

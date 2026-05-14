@@ -49,6 +49,19 @@ class EvidenceEmbedder:
         if not cards:
             return 0
 
+        # Sprint H.2: ChromaDB's EphemeralClient keeps a process-wide collection
+        # registry, so calling create_collection() twice with the same name in
+        # the same process raises InternalError("Collection ... already exists").
+        # This is exactly what happens on the chat endpoint when the same
+        # analysis_id is queried more than once per backend lifetime. Delete
+        # any prior collection with this name before creating a fresh one —
+        # each indexing call must own a clean slate, never reuse stale content
+        # from a previous request.
+        try:
+            self._client.delete_collection(name=self.collection_name)
+        except Exception:
+            pass  # No prior collection — first run for this analysis_id.
+
         self._collection = self._client.create_collection(
             name=self.collection_name,
             metadata={"hnsw:space": "cosine"},

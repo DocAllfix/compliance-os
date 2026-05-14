@@ -74,8 +74,9 @@ export interface TraceabilityLink {
   evidence_id: string;
   file_name: string;
   pages: number[];
-  excerpt: string;
+  excerpt: string;                  // verbatim quote from the document (Q12)
   relevance_score: number;
+  summary?: string | null;          // LLM descriptive summary (Q11), optional
 }
 
 export interface RemediationPlan {

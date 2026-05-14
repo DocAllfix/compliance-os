@@ -45,7 +45,7 @@ def test_hallucinated_ids_are_discarded():
         "evidence_used": ["ev_001", "ev_INVENTED_001", "ev_002", "ev_FAKE_002"],
         "remediation": {"what": "x", "who": "QM", "when": "30 days", "effort": "LOW"},
     }
-    gap = _parse_batch_clause_gap(llm_response, _clause(), _evidence_list())
+    gap = _parse_batch_clause_gap(llm_response, _clause(), _evidence_list(), cards_by_id={})
     cited_ids = [s.evidence_id for s in gap.sources]
     assert "ev_001" in cited_ids
     assert "ev_002" in cited_ids
@@ -65,7 +65,7 @@ def test_all_hallucinated_ids_with_conformant_downgrades_to_observation():
         "evidence_used": ["ev_FAKE_001", "ev_FAKE_002"],
         "remediation": {"what": "x", "who": "QM", "when": "30 days", "effort": "LOW"},
     }
-    gap = _parse_batch_clause_gap(llm_response, _clause(), _evidence_list())
+    gap = _parse_batch_clause_gap(llm_response, _clause(), _evidence_list(), cards_by_id={})
     assert gap.severity == "OBSERVATION"  # downgraded by the post-LLM guard
     assert gap.sources == []
 
@@ -84,7 +84,7 @@ def test_legacy_sources_shape_is_also_accepted():
         ],
         "remediation": {"what": "x", "who": "QM", "when": "30 days", "effort": "LOW"},
     }
-    gap = _parse_batch_clause_gap(llm_response, _clause(), _evidence_list())
+    gap = _parse_batch_clause_gap(llm_response, _clause(), _evidence_list(), cards_by_id={})
     cited_ids = [s.evidence_id for s in gap.sources]
     assert cited_ids == ["ev_001"]
 
@@ -100,7 +100,7 @@ def test_no_citations_with_no_evidence_is_fine():
         "evidence_used": [],
         "remediation": {"what": "x", "who": "QM", "when": "30 days", "effort": "HIGH"},
     }
-    gap = _parse_batch_clause_gap(llm_response, _clause(), [])
+    gap = _parse_batch_clause_gap(llm_response, _clause(), [], cards_by_id={})
     assert gap.severity == "MAJOR"
     assert gap.sources == []
     assert gap.is_spof is True

@@ -125,6 +125,9 @@ function FindingCard({ f, defaultExpanded = false }: { f: Finding; defaultExpand
               {f.sources.slice(0, 3).map((src, i) => {
                 const pageLbl = pagesLabel(src.pages);
                 const excerpt = (src.excerpt || '').trim();
+                const summary = (src.summary || '').trim();
+                // Hide summary if it's just a duplicate of the excerpt
+                const showSummary = summary && summary !== excerpt;
                 return (
                   <div key={src.evidence_id || i} className="pdf-excerpt">
                     <span className="pdf-excerpt-meta">
@@ -140,6 +143,12 @@ function FindingCard({ f, defaultExpanded = false }: { f: Finding; defaultExpand
                     ) : (
                       <div className="pdf-excerpt-empty">
                         No verbatim excerpt was indexed for this evidence card.
+                      </div>
+                    )}
+                    {showSummary && (
+                      <div className="pdf-excerpt-summary">
+                        <span className="pdf-excerpt-summary-label">Summary</span>
+                        <p>{summary}</p>
                       </div>
                     )}
                   </div>
