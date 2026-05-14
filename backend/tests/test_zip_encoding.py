@@ -67,3 +67,26 @@ def test_extract_documents_handles_ascii_names_unchanged():
     docs = _extract_documents(buf.getvalue(), emit=lambda *_a, **_k: None)
     assert len(docs) == 1
     assert docs[0]["filename"] == "simple_name.txt"
+
+
+def test_repair_zip_name_cp437_mojibake():
+    """Sprint G.2 (rivisto): il fix vero è cp437→utf8 round-trip per nomi
+    'corrotti' come "Idonieta╠Ç BRUNO.pdf" (cp437 misread di b'\\xc3\\xa0')."""
+    from compliance.pipeline import _repair_zip_name
+
+    # Caso 1: nome corrotto cp437→utf8 mojibake (era il bug CTM 45001)
+    corrupt = "Idoneita╠Ç BRUNO.pdf"   # equivale a "Idoneita╠Ç BRUNO.pdf"
+    repaired = _repair_zip_name(corrupt)
+    assert repaired == "Idoneità BRUNO.pdf", f"Expected NFC 'Idoneità BRUNO.pdf', got {repaired!r}"
+
+    # Caso 2: nome ASCII puro → invariato
+    assert _repair_zip_name("simple_name.txt") == "simple_name.txt"
+
+    # Caso 3: nome già UTF-8 NFC corretto → invariato
+    assert _repair_zip_name("documento_corretto.pdf") == "documento_corretto.pdf"
+
+    # Caso 4: nome NFD (macOS): "a" + U+0300 → "à" precomposto NFC
+    nfd_name = "Idoneità GRAMAZIO.pdf"
+    repaired_nfd = _repair_zip_name(nfd_name)
+    assert "̀" not in repaired_nfd, "Combining diacritic non rimosso"
+    assert "à" in repaired_nfd

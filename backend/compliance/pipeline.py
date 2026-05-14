@@ -32,6 +32,41 @@ from compliance.schemas import CompanyContext, ComplianceAnalysisResult
 _log = logging.getLogger("compliance.pipeline")
 
 
+def _repair_zip_name(raw_name: str) -> str:
+    """Sprint G.2 (rivisto): ripara nomi file ZIP letti con cp437 quando il
+    contenuto vero era UTF-8.
+
+    Casi gestiti:
+    1. Nome già pulito (ASCII o UTF-8 valido) → ritornato as-is con NFC normalize.
+    2. Nome corrotto (cp437 misread di bytes UTF-8): re-encode cp437 + decode
+       utf-8. Se riesce e produce solo caratteri NFC validi senza combining
+       residui, usiamo il risultato; altrimenti fallback al nome originale.
+
+    Esempio (CTM 45001.zip):
+        raw: "Idonieta╠Ç BRUNO.pdf"   (cp437 di b'\\xc3\\xa0')
+        out: "Idonietà BRUNO.pdf"     (NFC riparato)
+
+    Sempre normalizzato in NFC alla fine (gestisce anche il caso macOS NFD
+    "a + U+0300" come precauzione aggiuntiva).
+    """
+    # Heuristic: i caratteri "spazzatura" tipici di cp437-misread di bytes
+    # UTF-8 multibyte. Se troviamo uno di questi indizi, tentiamo il round-trip.
+    suspicious_chars = set("╠╣╔═╗╚╝┌┐└┘├┤┬┴┼")
+    has_suspicious = any(ch in suspicious_chars for ch in raw_name)
+
+    if has_suspicious:
+        try:
+            repaired = raw_name.encode("cp437").decode("utf-8")
+            # Verifichiamo che il risultato sia "ragionevole": nessun byte non stampabile
+            if all(ord(ch) >= 32 or ch in "\t\n" for ch in repaired):
+                return unicodedata.normalize("NFC", repaired)
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            pass
+
+    # Default path: normalize NFC (gestisce anche NFD da macOS)
+    return unicodedata.normalize("NFC", raw_name)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Phase 1 helper — text extraction from ZIP
 # ──────────────────────────────────────────────────────────────────────────────
@@ -52,15 +87,15 @@ def _extract_documents(zip_bytes: bytes, emit: Callable) -> List[Dict[str, Any]]
             emit(8.0, f"Found {len(names)} files in archive.")
 
             for raw_name in names:
-                # Sprint G.2: i ZIP creati su macOS spesso salvano i nomi file in
-                # UTF-8 NFD (Normalization Form Decomposed): la "à" diventa la
-                # sequenza "a" + U+0300 (combining grave accent). Su Windows
-                # alcuni renderer la corrompono in "╠Ç" o simili. Normalizziamo
-                # a NFC per ricomporre i caratteri precomposti standard.
-                display_name = unicodedata.normalize("NFC", raw_name)
+                # Sprint G.2 (rivisto): i ZIP creati su macOS hanno spesso
+                # i nomi salvati in UTF-8 ma SENZA il bit 11 del flag attivo.
+                # Python zipfile in quel caso decodifica con cp437 (legacy
+                # default), producendo caratteri "spazzatura" (es. "╠Ç" al
+                # posto di "à"). Il rimedio è ricodificare con cp437 e
+                # ridecodificare con utf-8. Poi normalizziamo NFC per sicurezza.
+                display_name = _repair_zip_name(raw_name)
                 try:
-                    # zf.read() vuole il nome internamente registrato (raw_name),
-                    # ma quello che propaghiamo a Phase 2/3/UI è la versione NFC.
+                    # zf.read() vuole il nome internamente registrato (raw_name).
                     raw = zf.read(raw_name)
                     content = _read_file_content(display_name, raw)
                     if content:
