@@ -51,10 +51,21 @@ def test_passing_clause_tier_floor_and_weight(sample_clause_passing):
 
 
 def test_floor_escalates_observation_to_major_on_critical(sample_clause_critical):
+    """Sprint I.B: floor escalates severity AND realigns score into the new band.
+    The leaked debug marker '[severity floor applied …]' is NOT emitted into the
+    user-facing finding anymore — that information now goes to server logs only.
+    """
     gap = _make_gap("OBSERVATION")
+    gap.score = 70  # in OBSERVATION band, contradicts MAJOR after floor
     result = _apply_severity_floor(gap, sample_clause_critical, evidence_list=[])
     assert result.severity == "MAJOR"
-    assert "severity floor applied" in result.finding
+    # Marker MUST NOT leak into the visible finding text anymore.
+    assert "severity floor applied" not in result.finding
+    # Score MUST be realigned into the MAJOR band (0-29) so UI doesn't show
+    # the contradiction "score 70 / MAJOR".
+    assert result.score <= 29
+    # Original finding text is preserved untouched.
+    assert result.finding == "test"
 
 
 def test_floor_does_not_apply_to_passing_clause(sample_clause_passing):

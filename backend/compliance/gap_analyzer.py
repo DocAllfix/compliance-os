@@ -66,7 +66,15 @@ _log = logging.getLogger("compliance.gap_analyzer")
 GAP_BATCH_SIZE = 10            # clauses per LLM call (was: 1)
 GAP_MAX_WORKERS = 3            # parallel batch workers per norm
 GAP_BATCH_MAX_TOKENS = 4096    # output budget per batch
-GAP_RETRIEVAL_TOP_K = 4        # evidence cards retrieved per clause
+GAP_RETRIEVAL_TOP_K = 4        # evidence cards retrieved per clause (standard)
+# Sprint I.C — critical clauses (is_spof / high-frequency) get a wider retrieval
+# window so we don't false-negative them when the top-4 happen to be irrelevant.
+GAP_RETRIEVAL_TOP_K_CRITICAL = 8
+# When the initial retrieval returns zero evidences for a clause, retry with the
+# whole collection so we don't declare "no evidence" just because the top-K
+# missed the relevant cards. The expanded retrieval cap protects us against
+# very large card sets (e.g. >100 docs).
+GAP_RETRIEVAL_FALLBACK_CAP = 20
 
 # Severity ordering used by the floor application
 _SEVERITY_ORDER = {
@@ -279,6 +287,49 @@ def _sort_clauses_by_criticality(clause_list: List[Dict[str, Any]]) -> List[Dict
     )
 
 
+def _retrieve_with_fallback(
+    evidence_service: EvidenceService,
+    clause: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Sprint I.C — retrieval that defends against the two main false-negative
+    patterns observed in production:
+
+      1. Critical/SPoF clauses get a wider retrieval window (TOP_K=8 vs 4) so
+         that, when the top-4 by cosine similarity happen to be irrelevant,
+         the next 4 still have a chance to surface the truly pertinent cards.
+
+      2. If retrieval returns zero results AT ALL, we retry with a much larger
+         window (up to GAP_RETRIEVAL_FALLBACK_CAP cards). This handles the
+         pathological "ChromaDB returned nothing usable" case where the first
+         pass missed the relevant evidence purely on similarity ranking.
+    """
+    is_critical = bool(
+        clause.get("is_spof", False)
+        or get_criticality_tier(clause) == "critical"
+    )
+    top_k = GAP_RETRIEVAL_TOP_K_CRITICAL if is_critical else GAP_RETRIEVAL_TOP_K
+
+    results = evidence_service.get_evidences_for_clause(clause, n=top_k)
+
+    # Fallback: if first pass returned nothing, retry with the broader cap.
+    # Doing this only on empty results keeps the cost bounded — we don't pay
+    # the wider retrieval on every clause, only on the ones that would
+    # otherwise be wrongly marked "no evidence".
+    if not results:
+        results = evidence_service.get_evidences_for_clause(
+            clause, n=GAP_RETRIEVAL_FALLBACK_CAP,
+        )
+        if results:
+            _log.info(
+                "Clause %s: fallback retrieval rescued %d evidence(s) "
+                "after empty first pass",
+                clause.get("id", "?"),
+                len(results),
+            )
+
+    return results
+
+
 def _analyse_norm(
     norm: str,
     clauses: Dict[str, Dict[str, Any]],
@@ -310,11 +361,14 @@ def _analyse_norm(
             f"{norm}: batch {batch_idx + 1}/{total_batches} ({len(batch)} clauses)…",
         )
 
-        # Retrieve evidences for every clause in the batch via the typed
-        # EvidenceService (Sprint 3.2). Same retrieval semantics as before,
-        # just routed through the typed API so chat and tests share it.
+        # Sprint I.C — retrieve evidences with two anti-false-negative measures:
+        #   (1) critical / SPoF clauses get a wider retrieval window (TOP_K=8)
+        #       so the top-4-irrelevant-cards trap doesn't false-negative them
+        #   (2) if the initial retrieval returns zero, we retry with a much
+        #       larger n so we don't declare "no evidence" just because the
+        #       semantic similarity ranking happened to miss the relevant cards
         clause_evidences: List[tuple] = [
-            (clause, evidence_service.get_evidences_for_clause(clause, n=GAP_RETRIEVAL_TOP_K))
+            (clause, _retrieve_with_fallback(evidence_service, clause))
             for clause in batch
         ]
 
@@ -638,6 +692,14 @@ def _apply_severity_floor(
 
     Never escalates a CONFORMANT verdict that already has valid sources — that
     is a positive finding worth preserving.
+
+    Sprint I.B — coherence fix:
+      * No longer prepends "[severity floor applied …]" to gap.finding (was a
+        debug marker leaking into the user-facing text).
+      * When severity is escalated, score is realigned into the new severity
+        band so that the UI never shows "score 70 / MAJOR" (contradictory).
+      * The original LLM-assigned score is preserved in server-side logging
+        for audit/debugging, never in the visible finding.
     """
     floor = get_severity_floor(clause)
     if floor is None:
@@ -653,11 +715,40 @@ def _apply_severity_floor(
         return gap
 
     tier = get_criticality_tier(clause)
-    note = f"[severity floor applied — clause is {tier}] "
+    original_severity = gap.severity
+    original_score = gap.score
+
+    # Escalate severity to the floor
     gap.severity = floor
-    gap.finding = (note + gap.finding)[:800]
+
+    # Realign score into the new severity band so the two numbers don't
+    # contradict each other in the UI. Bands from gap_analysis_batch.md:
+    #   MAJOR:       0-29
+    #   MINOR:       30-59
+    #   OBSERVATION: 60-84
+    #   CONFORMANT:  85-100
+    _SEVERITY_SCORE_CEILING = {
+        "MAJOR":       29,
+        "MINOR":       59,
+        "OBSERVATION": 84,
+        "CONFORMANT":  100,
+    }
+    ceiling = _SEVERITY_SCORE_CEILING.get(floor, gap.score)
+    if gap.score > ceiling:
+        gap.score = ceiling
+
     # Re-evaluate SPoF flag with the escalated severity
     gap.is_spof = bool(clause.get("is_spof", False)) and gap.severity == "MAJOR"
+
+    _log.info(
+        "Severity floor applied to clause %s (%s): LLM verdict %s/%d -> floored to %s/%d",
+        clause.get("id", "?"),
+        tier,
+        original_severity,
+        original_score,
+        gap.severity,
+        gap.score,
+    )
     return gap
 
 
