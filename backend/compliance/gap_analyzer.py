@@ -465,6 +465,28 @@ def _build_batch_user_prompt(clause_evidences: List[tuple]) -> str:
         parts.append("- typical_ncs:")
         for nc in clause.get("typical_ncs", []) or []:
             parts.append(f"    - {nc}")
+
+        # Sprint J — atomic_requirements: when the clause carries an explicit
+        # verifiable checklist, present it to the LLM so the verdict is
+        # grounded item-by-item rather than on general clause knowledge. This
+        # is the strongest single change to engine accuracy on critical
+        # clauses (e.g. Management Review §9.3, Hazard ID §6.1.2).
+        atomic_reqs = clause.get("atomic_requirements") or []
+        if atomic_reqs:
+            parts.append("- atomic_requirements (verify each item against the evidence):")
+            for req in atomic_reqs:
+                parts.append(f"    - id: {req.get('id', '')}")
+                parts.append(f"      text: {req.get('text', '')}")
+                hint = req.get("verification_hint", "")
+                if hint:
+                    parts.append(f"      verification_hint: {hint}")
+                expected = req.get("expected_evidence", []) or []
+                if expected:
+                    parts.append(f"      expected_evidence: {', '.join(expected)}")
+                risk = req.get("risk_if_missing", "")
+                if risk:
+                    parts.append(f"      risk_if_missing: {risk}")
+
         rem = clause.get("remediation_template", {})
         parts.append("- remediation_template:")
         parts.append(f"    what: {rem.get('what', '')}")

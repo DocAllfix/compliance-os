@@ -268,6 +268,82 @@ ISO45001_CLAUSES: Dict[str, Dict[str, Any]] = {
             "confined space", "electrical work", "non-routine", "maintenance risk",
             "contractor risk", "near miss", "incident analysis",
         ],
+        # Sprint J — atomic_requirements derived from Master KB §5.2.1 and
+        # public audit-checklist references (AUVA, IAF MD 1, ISOQAR). These
+        # are verified per-clause by the LLM, so the verdict is grounded on a
+        # named checklist rather than the model's internal knowledge alone.
+        "atomic_requirements": [
+            {
+                "id": "45001_6_1_2.scope.routine",
+                "text": "Hazard identification covers routine work activities.",
+                "verification_hint": "Risk assessment lists ordinary day-to-day tasks with associated hazards.",
+                "expected_evidence": ["risk_assessment"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "45001_6_1_2.scope.non_routine",
+                "text": "Hazard identification covers non-routine work (maintenance, shutdowns, exceptional operations).",
+                "verification_hint": "Risk assessment names non-ordinary activities; presence of maintenance JSA or permit-to-work references.",
+                "expected_evidence": ["risk_assessment", "procedure"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "45001_6_1_2.scope.contractors",
+                "text": "Hazard identification covers contractor and outsourced activities performed on-site.",
+                "verification_hint": "DUVRI present, contractor risk assessment, or explicit reference to outsourced work in the DVR.",
+                "expected_evidence": ["risk_assessment", "supplier_document"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "45001_6_1_2.scope.emergency",
+                "text": "Hazard identification covers emergency and abnormal scenarios (fire, spill, equipment failure).",
+                "verification_hint": "Emergency scenarios appear in the risk register; cross-reference to emergency plan exists.",
+                "expected_evidence": ["risk_assessment", "emergency_plan"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "45001_6_1_2.methodology.documented",
+                "text": "A documented methodology for risk evaluation exists (criteria, scoring, prioritisation).",
+                "verification_hint": "DVR or annex describes how risks are scored (probability, severity, controls).",
+                "expected_evidence": ["risk_assessment", "procedure"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "45001_6_1_2.methodology.applied",
+                "text": "Methodology is actually applied — risks carry scores and prioritisation, not just qualitative narrative.",
+                "verification_hint": "Each hazard has a numerical score / band; prioritisation drives control selection.",
+                "expected_evidence": ["risk_assessment"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "45001_6_1_2.review.frequency",
+                "text": "Review frequency for the risk assessment is defined and respected.",
+                "verification_hint": "Stated revision date in DVR (e.g. annual or after process change); evidence of timely update.",
+                "expected_evidence": ["risk_assessment"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "45001_6_1_2.review.triggers",
+                "text": "Risk assessment is updated after significant changes (new equipment, process changes, incidents, near misses).",
+                "verification_hint": "Change-trigger references, or recent revision date aligned with documented changes.",
+                "expected_evidence": ["risk_assessment", "nonconformity_record"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "45001_6_1_2.controls.hierarchy",
+                "text": "Control measures follow the hierarchy of controls (elimination > substitution > engineering > admin > PPE).",
+                "verification_hint": "Controls are not exclusively PPE; engineering or organisational measures appear.",
+                "expected_evidence": ["risk_assessment", "procedure"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "45001_6_1_2.worker_participation",
+                "text": "Workers (or their representatives) are consulted during hazard identification.",
+                "verification_hint": "RLS / worker signature on DVR; reference to consultation in revision history.",
+                "expected_evidence": ["risk_assessment", "communication_record"],
+                "risk_if_missing": "MINOR",
+            },
+        ],
         "remediation_template": {
             "what": "Update or design a formal hazard identification and risk assessment process covering all activities and conditions including non-routine and emergency scenarios. Define review frequency. Train RSPP/supervisors. Link outputs to operational controls and objectives.",
             "who": "RSPP / HSE Manager",
@@ -424,6 +500,51 @@ ISO45001_CLAUSES: Dict[str, Dict[str, Any]] = {
             "contractor OH&S", "procurement", "outsourcing", "contractor briefing",
             "contractor register", "contractor assessment", "work at height contractor",
         ],
+        # Sprint J — atomic_requirements derived from Master KB §5.2.3.
+        "atomic_requirements": [
+            {
+                "id": "45001_8_1_4.qualification.criteria",
+                "text": "Documented OH&S qualification criteria for contractors exist (legal compliance, training, equipment, insurance).",
+                "verification_hint": "Procurement procedure or contractor register lists OH&S criteria, not just commercial criteria.",
+                "expected_evidence": ["procedure", "supplier_document"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "45001_8_1_4.qualification.applied",
+                "text": "Contractors actually performing work have been qualified against the criteria (not just declared).",
+                "verification_hint": "Qualified-contractor register matches contractors named in actual purchase orders / invoices.",
+                "expected_evidence": ["supplier_document", "record"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "45001_8_1_4.coordination.duvri",
+                "text": "DUVRI (Documento Unico di Valutazione Rischi da Interferenze) issued for contractor activities with interference risk.",
+                "verification_hint": "DUVRI document present for relevant contractors; covers interference hazards and coordination measures.",
+                "expected_evidence": ["risk_assessment", "supplier_document"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "45001_8_1_4.briefing.records",
+                "text": "Contractors receive a documented site-specific safety briefing before commencing work.",
+                "verification_hint": "Briefing records signed by contractor representatives; specific to the site and activity.",
+                "expected_evidence": ["training_record", "communication_record"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "45001_8_1_4.high_risk.controls",
+                "text": "Contractor activities classified as high-risk (work at height, electrical, confined spaces) carry specific OH&S controls.",
+                "verification_hint": "Permit-to-work, specific JSA, supervisor presence documented for high-risk contractor jobs.",
+                "expected_evidence": ["procedure", "record", "risk_assessment"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "45001_8_1_4.monitoring",
+                "text": "Contractor OH&S performance is monitored (inspections, audits, incident reporting).",
+                "verification_hint": "Contractor audit reports, inspection records, or incident logs referencing contractors.",
+                "expected_evidence": ["audit_report", "nonconformity_record"],
+                "risk_if_missing": "MINOR",
+            },
+        ],
         "remediation_template": {
             "what": "Define contractor qualification procedure with OH&S criteria and security requirements. Issue and control DUVRI for all contractors. Implement mandatory safety briefings. Conduct regular audits of critical contractors.",
             "who": "HSE Manager / Procurement Manager",
@@ -477,6 +598,51 @@ ISO45001_CLAUSES: Dict[str, Dict[str, Any]] = {
             "OH&S KPI", "accident rate", "near miss rate", "inspection records",
             "safety inspection", "safety tour", "monitoring", "measurement",
             "calibration", "performance indicators", "RIDDOR",
+        ],
+        # Sprint J — atomic_requirements derived from Master KB §5.2.4.
+        "atomic_requirements": [
+            {
+                "id": "45001_9_1.kpi.defined",
+                "text": "OH&S KPIs are formally defined (with name, calculation, target, frequency).",
+                "verification_hint": "KPI list / dashboard with measurable indicators (e.g. LTIFR, near-miss rate, inspection completion).",
+                "expected_evidence": ["procedure", "objective_plan", "record"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "45001_9_1.kpi.leading_and_lagging",
+                "text": "KPI set includes both leading (preventive: inspections, training hours, near miss rate) and lagging (reactive: incidents, lost-time injuries) indicators.",
+                "verification_hint": "Mix of preventive and reactive metrics, not only injury counts.",
+                "expected_evidence": ["objective_plan", "record"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "45001_9_1.monitoring.schedule",
+                "text": "Scheduled safety inspections and tours are planned and recorded.",
+                "verification_hint": "Inspection plan with frequency; signed inspection records or checklists.",
+                "expected_evidence": ["record", "procedure"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "45001_9_1.equipment.calibration",
+                "text": "Monitoring equipment (gas detectors, noise meters, vibration meters, lux meters) is calibrated to documented schedule.",
+                "verification_hint": "Calibration certificates / records for OH&S measurement devices; next-due date tracked.",
+                "expected_evidence": ["calibration_record"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "45001_9_1.analysis.trends",
+                "text": "OH&S performance data is analysed for trends, not only collected.",
+                "verification_hint": "Trend report, period-over-period comparison, charts or commentary on direction.",
+                "expected_evidence": ["audit_report", "management_review", "record"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "45001_9_1.link.management_review",
+                "text": "KPI outputs feed the management review (clause 9.3).",
+                "verification_hint": "Management-review minutes reference the same KPIs; corrective actions traced from KPI performance.",
+                "expected_evidence": ["management_review"],
+                "risk_if_missing": "MINOR",
+            },
         ],
         "remediation_template": {
             "what": "Define and implement OH&S KPIs including both leading and lagging indicators. Schedule and record regular safety inspections and tours. Ensure monitoring equipment is calibrated. Link KPI results to management review.",
@@ -580,6 +746,51 @@ ISO45001_CLAUSES: Dict[str, Dict[str, Any]] = {
             "incident investigation", "root cause analysis", "corrective action",
             "CAPA", "5 whys", "incident register", "near miss register",
             "accident book", "first aid record",
+        ],
+        # Sprint J — atomic_requirements derived from Master KB §5.2.2.
+        "atomic_requirements": [
+            {
+                "id": "45001_10_2.process.defined",
+                "text": "A documented procedure for incident and near-miss reporting exists.",
+                "verification_hint": "Procedure document with definitions (incident, near miss), reporting channels, and timelines.",
+                "expected_evidence": ["procedure"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "45001_10_2.near_miss.recording",
+                "text": "Near misses are actually recorded — not only injury events.",
+                "verification_hint": "Register containing near-miss entries; volume consistent with workplace activity (zero near misses is itself a red flag).",
+                "expected_evidence": ["nonconformity_record", "record"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "45001_10_2.investigation.rca",
+                "text": "Significant incidents and near misses receive a root-cause analysis (5 Whys, Ishikawa, or equivalent).",
+                "verification_hint": "RCA documents attached to incident records; not just immediate-cause descriptions.",
+                "expected_evidence": ["nonconformity_record", "audit_report"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "45001_10_2.capa.actions",
+                "text": "Corrective actions are defined for each significant incident, with owner and deadline.",
+                "verification_hint": "CAPA log shows action / owner / deadline / status / closure date for each entry.",
+                "expected_evidence": ["nonconformity_record"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "45001_10_2.capa.effectiveness",
+                "text": "Effectiveness of corrective actions is verified after implementation.",
+                "verification_hint": "Effectiveness-check entries on CAPA log; signed-off verification date distinct from implementation date.",
+                "expected_evidence": ["nonconformity_record"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "45001_10_2.trend_review",
+                "text": "Incidents and near misses are periodically reviewed for trends (cluster by location, activity, root cause).",
+                "verification_hint": "Trend report; safety committee minutes referencing aggregated incident analysis.",
+                "expected_evidence": ["management_review", "audit_report", "record"],
+                "risk_if_missing": "MINOR",
+            },
         ],
         "remediation_template": {
             "what": "Establish a near miss and incident reporting procedure with clear definitions. Implement an easy-to-use reporting mechanism. Require root cause analysis and CAPA for all significant near misses and incidents. Conduct periodic review to identify trends.",
