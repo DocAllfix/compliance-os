@@ -1,29 +1,32 @@
-streamlit>=1.29.0
-python-docx>=1.1.0
-google-generativeai>=0.3.0
-google-genai>=1.0.0
-bcrypt>=4.0.0
-PyPDF2>=3.0.1
-PyMuPDF>=1.24.0
-pandas>=2.2.0
-openpyxl>=3.1.2
-pdf2image>=1.17.0
-pytesseract>=0.3.10
-colorama>=0.4.6
-olefile>=0.47
-xlrd>=2.0.1
-pywin32>=306; sys_platform == "win32"
-# ── FastAPI REST backend ──────────────────────────────────────────────────────
+# =============================================================================
+# ComplianceOS — backend requirements
+# Consolidamento Fase 1 (2026-06): rimosse le dipendenze dell'app legacy
+# AUDITORSEMI (streamlit, google-generativeai/google-genai, PyPDF2, PyMuPDF,
+# pandas, pdf2image, pytesseract, colorama, olefile, pywin32, docxcompose) —
+# zero import nel codice superstite dopo lo sgombero di Fase 2.
+# =============================================================================
+
+# ── Web framework ─────────────────────────────────────────────────────────────
 fastapi>=0.111.0
 uvicorn[standard]>=0.30.0
 python-multipart>=0.0.9
+python-dotenv>=1.0.0
 
-# ── V2 Pipeline (Metodo A — Triage Funnel) ────────────────────────────────────
-# Aggiunte sul branch v2-experimental. NON impattano V1 (import lazy).
-pypdfium2>=4.30.0       # Fase 1: estrazione testo nativo PDF
-docxcompose>=1.4.0      # Fase 0.5/7: Word merging incrementale (PoC validato)
-# filelock>=3.13.0      # Fase 6: progress store concurrent-safe (verrà aggiunto)
-# psutil>=5.9.0         # Fase 6: heartbeat watchdog metrics (verrà aggiunto)
+# ── Auth ──────────────────────────────────────────────────────────────────────
+bcrypt>=4.0.0
 
-# ── ComplianceOS — Gap Analysis Engine ───────────────────────────────────────
-chromadb>=1.5.0         # Vector store locale per evidence cards embedding
+# ── Document ingestion (Phase 1) ──────────────────────────────────────────────
+pypdfium2>=4.30.0        # estrazione PDF page-aware (marcatori [PAGE n])
+pdfminer.six>=20231228   # fallback whole-document PDF
+python-docx>=1.1.0       # DOCX (paragrafi + tabelle)
+openpyxl>=3.1.2          # XLSX/XLSM (obiettivi/KPI in spreadsheet — P7)
+xlrd>=2.0.1              # XLS legacy
+azure-ai-documentintelligence>=1.0.0  # OCR prebuilt-read (full-doc e per-pagina)
+
+# ── Compliance engine ─────────────────────────────────────────────────────────
+chromadb>=1.5.0          # chunk index semantico per-analisi
+openai>=1.30.0           # Azure OpenAI GPT-4.1-mini (Foundry v1, SDK standard)
+PyYAML>=6.0              # evidence cards + custom requirement sets
+
+# ── Test ──────────────────────────────────────────────────────────────────────
+pytest>=8.0.0

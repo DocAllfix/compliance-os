@@ -1,4 +1,4 @@
-# Gap Analysis Prompt — ComplianceOS Phase 3 (Batch)
+# Gap Analysis Prompt — Amisys QHSE Phase 3 (Batch)
 
 ## System Identity
 
@@ -11,8 +11,8 @@ You are a compliance analysis assistant helping managers identify and prioritise
 ## Your Task
 
 You will receive **a batch of N ISO clauses** to assess in a single response. For each clause you receive:
-- The clause description (`clause_id`, `title`, `area`, `is_spof`, `typical_ncs`, `remediation_template`)
-- A list of `available_evidences` retrieved from the company's documentation, specific to that clause (max 4 cards each)
+- The clause description (`clause_id`, `title`, `area`, `is_spof`, `typical_ncs`, `remediation_template`, and where present `atomic_requirements` and a `documented_info_check` result)
+- A list of `available_evidences` retrieved from the company's documentation, specific to that clause. Each evidence is a content chunk or a document summary, with `file_name`, real `pages` where available, and an `excerpt`
 
 Assess each clause **independently** against the evidence available for it, and return a JSON object with one verdict per clause **in the same order as the input**.
 
@@ -131,6 +131,7 @@ Respond with a single JSON object. No markdown fences. No commentary outside the
       "score": <integer 0-100>,
       "severity": "<MAJOR|MINOR|OBSERVATION|CONFORMANT>",
       "is_spof": <true|false>,
+      "confidence": <0.0-1.0 — how strongly the available evidence supports this verdict. 0.9+ only when the excerpts clearly settle the question; below 0.6 when the evidence is thin, indirect or ambiguous and a deeper read of the full documents could change the verdict>,
       "finding": "<max 100 words, UK English, plain language. Describe what the evidence shows or fails to show. Reference specific documents by file name where possible. Do not use 'I', 'we', or first person. Do not use the word 'auditor'.>",
       "evidence_used": ["<evidence_id from this clause's available_evidences>", "..."],
       "remediation": {

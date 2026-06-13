@@ -109,6 +109,38 @@ ISO14001_CLAUSES: Dict[str, Dict[str, Any]] = {
             "scope", "EMS scope", "boundaries", "activities", "products", "services",
             "documented information", "exclusions",
         ],
+        # Sprint R8 — atomic_requirements (TEMPLATE14001.docx §4.3: scope
+        # MAINTAIN obbligatorio, coerenza con cogenze e outsourcing).
+        "atomic_requirements": [
+            {
+                "id": "14001_4_3.scope.documented",
+                "text": "The EMS scope is maintained as documented information (mandatory documented information for 14001).",
+                "verification_hint": "Scope statement in the EMS manual or standalone document, with sites and boundaries.",
+                "expected_evidence": ["quality_manual", "policy", "record"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "14001_4_3.scope.coverage",
+                "text": "The scope covers the actual activities, products and services with environmental impacts — no unjustified exclusions of significant aspects.",
+                "verification_hint": "Cross-check scope wording against the aspect register and the actual operations described in other documents.",
+                "expected_evidence": ["quality_manual", "risk_assessment"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "14001_4_3.scope.coherence",
+                "text": "The scope is coherent with the compliance obligations and the internal/external context, and considers the organisation's ability to influence outsourced activities.",
+                "verification_hint": "Scope references compliance obligations/context; outsourced processes addressed (checklist 4.3: capacità di influenza sull'outsourcing).",
+                "expected_evidence": ["quality_manual", "legal_register"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "14001_4_3.scope.available",
+                "text": "The scope is available to interested parties.",
+                "verification_hint": "Statement of availability (website, on request) or distribution evidence.",
+                "expected_evidence": ["quality_manual", "communication_record"],
+                "risk_if_missing": "MINOR",
+            },
+        ],
         "remediation_template": {
             "what": "Define and document the EMS scope covering all sites, activities, products, and services with significant environmental impacts. Justify any exclusions.",
             "who": "Environmental Manager",
@@ -159,6 +191,38 @@ ISO14001_CLAUSES: Dict[str, Dict[str, Any]] = {
             "top management", "leadership", "commitment", "environmental policy",
             "resources", "management review", "accountability",
         ],
+        # Sprint R8 — atomic_requirements (TEMPLATE14001.docx §5.1 + ISO 14001
+        # §5.1). Documentation-verifiable items; interview guidance excluded.
+        "atomic_requirements": [
+            {
+                "id": "14001_5_1.policy_objectives.established",
+                "text": "Top management has established the environmental policy and objectives, coherent with strategy, significant aspects and compliance obligations.",
+                "verification_hint": "Signed policy; objectives traceable to significant aspects and strategic direction (checklist 5.1: strategie e obiettivi su business, AA significativi, obblighi).",
+                "expected_evidence": ["policy", "objective_plan"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "14001_5_1.resources.allocated",
+                "text": "Evidence exists that top management provides adequate resources for the EMS.",
+                "verification_hint": "Resource decisions in MR outputs, investments in environmental controls, appointments (environmental manager).",
+                "expected_evidence": ["management_review", "record"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "14001_5_1.review.led",
+                "text": "Top management participates in and leads the management review of the EMS.",
+                "verification_hint": "MR minutes list top management among attendees; environmental performance discussed at that level.",
+                "expected_evidence": ["management_review"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "14001_5_1.integration.evidence",
+                "text": "EMS requirements are integrated into the organisation's business processes (not a parallel paper system).",
+                "verification_hint": "Environmental requirements embedded in operational procedures, purchasing, planning documents.",
+                "expected_evidence": ["procedure", "quality_manual"],
+                "risk_if_missing": "MINOR",
+            },
+        ],
         "remediation_template": {
             "what": "Establish documented evidence of top management environmental commitment: signed environmental policy, resource allocation records, and management review minutes.",
             "who": "Managing Director / Environmental Manager",
@@ -182,6 +246,59 @@ ISO14001_CLAUSES: Dict[str, Dict[str, Any]] = {
         "evidence_keywords": [
             "environmental policy", "policy statement", "pollution prevention",
             "commitment", "continual improvement", "communicated", "protect environment",
+        ],
+        # Sprint R3 — atomic_requirements from audit checklist guidance
+        # (TEMPLATE14001.docx §5.2: policy MUST contain commitments to
+        # protection of the environment, fulfilment of compliance obligations,
+        # continual improvement; coherent with context and impacts) + ISO
+        # 14001:2015 §5.2. Wording checks — promise P4.
+        "atomic_requirements": [
+            {
+                "id": "14001_5_2.policy.documented",
+                "text": "An environmental policy exists as documented information, identifiable as the current approved version (signed/dated by top management).",
+                "verification_hint": "Policy document or EMS manual section; approval signature or issue date.",
+                "expected_evidence": ["policy", "quality_manual"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "14001_5_2.commitment.protection",
+                "text": "The policy wording contains an explicit commitment to the protection of the environment, INCLUDING prevention of pollution.",
+                "verification_hint": "Look in the text for wording equivalent to 'protection of the environment' AND 'prevention of pollution' — both elements are required by the standard.",
+                "expected_evidence": ["policy"],
+                "risk_if_missing": "MAJOR",
+                # Sprint R7 — deterministic wording check (EN+IT variants)
+                "wording_keywords": [["protect", "protezion", "tutela", "salvaguard"], ["pollution", "inquinament"]],
+            },
+            {
+                "id": "14001_5_2.commitment.compliance",
+                "text": "The policy wording contains an explicit commitment to fulfil the organisation's compliance obligations (legal and other requirements).",
+                "verification_hint": "Wording equivalent to 'fulfil compliance obligations' / 'comply with applicable legal and other requirements' in the policy text.",
+                "expected_evidence": ["policy"],
+                "risk_if_missing": "MAJOR",
+                "wording_keywords": [["compliance", "legal", "obblig", "conform", "prescrizion", "cogent"]],
+            },
+            {
+                "id": "14001_5_2.commitment.improvement",
+                "text": "The policy wording contains an explicit commitment to continual improvement of the environmental management system to enhance environmental performance.",
+                "verification_hint": "Continual improvement of the EMS must be stated in the policy text itself.",
+                "expected_evidence": ["policy"],
+                "risk_if_missing": "MAJOR",
+                "wording_keywords": [["improv", "migliora", "enhanc", "perfezion", "ottimizz"]],
+            },
+            {
+                "id": "14001_5_2.context.coherence",
+                "text": "The policy is appropriate to the purpose and context of the organisation, coherent with the significant environmental impacts of its activities, products and services (commitments pertinent to the context — e.g. water, recycling, climate — not generic boilerplate).",
+                "verification_hint": "Compare policy themes against the aspect register (6.1.2) and the context analysis; template text with no organisation-specific environmental themes fails.",
+                "expected_evidence": ["policy", "risk_assessment"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "14001_5_2.communicated",
+                "text": "The policy is communicated within the organisation and available to interested parties.",
+                "verification_hint": "Distribution/communication evidence; availability to external parties (website, on request).",
+                "expected_evidence": ["communication_record", "policy"],
+                "risk_if_missing": "MINOR",
+            },
         ],
         "remediation_template": {
             "what": "Issue a signed, dated environmental policy including commitments to pollution prevention, compliance obligations, and continual improvement. Communicate to all staff and make available to interested parties.",
@@ -232,6 +349,38 @@ ISO14001_CLAUSES: Dict[str, Dict[str, Any]] = {
         "evidence_keywords": [
             "risk", "opportunity", "environmental risk register", "risk assessment",
             "mitigation", "environmental risk", "risk-based thinking",
+        ],
+        # Sprint R3 — atomic_requirements (TEMPLATE14001.docx §6.1.1 + ISO
+        # 14001 §6.1.1). Chain node for risk → operational control → monitoring.
+        "atomic_requirements": [
+            {
+                "id": "14001_6_1_1.planning.process",
+                "text": "The planning process determines risks and opportunities related to the environmental aspects, the compliance obligations and the context issues (4.1/4.2), covering performance improvement, compliance fulfilment and objective achievement.",
+                "verification_hint": "Planning records linking risks/opportunities to aspects (6.1.2), compliance obligations (6.1.3) and context analysis.",
+                "expected_evidence": ["risk_assessment", "record"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "14001_6_1_1.prioritisation.applied",
+                "text": "A methodology for assigning priority to risks is defined AND actually applied to the entries (not only declared).",
+                "verification_hint": "Spot-check: register entries carry the score/class produced by the declared method.",
+                "expected_evidence": ["risk_assessment"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "14001_6_1_1.documented",
+                "text": "Documented information on risks and opportunities and on the planning processes is maintained.",
+                "verification_hint": "Maintained register or planning document with revision control (checklist: MAINTAIN + RETAIN required).",
+                "expected_evidence": ["risk_assessment", "record"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "14001_6_1_1.emergency.input",
+                "text": "Potential emergency situations are identified among the planning inputs (link to emergency preparedness, 8.2).",
+                "verification_hint": "Emergency scenarios referenced in the planning/risk documents, coherent with the emergency plan.",
+                "expected_evidence": ["risk_assessment", "emergency_plan"],
+                "risk_if_missing": "MINOR",
+            },
         ],
         "remediation_template": {
             "what": "Establish an environmental risk and opportunity register. Define mitigation actions, assign owners, and review at management review.",
@@ -408,6 +557,48 @@ ISO14001_CLAUSES: Dict[str, Dict[str, Any]] = {
             "environmental objectives", "targets", "KPI", "action plan",
             "measurable", "environmental performance", "improvement targets",
         ],
+        # Sprint R3 — atomic_requirements from audit checklist guidance
+        # (TEMPLATE14001.docx §6.2.1-6.2.2: objectives measurable/monitored/
+        # communicated/updated; actions need interventi, risorse,
+        # responsabilità, scadenze) + ISO 14001 §6.2. Promise P5 —
+        # label-agnostic: objectives may appear as targets, KPIs, programmes.
+        "atomic_requirements": [
+            {
+                "id": "14001_6_2.objectives.documented",
+                "text": "Environmental objectives exist as documented information at relevant functions — regardless of the label used (objectives, targets, KPIs, environmental programmes).",
+                "verification_hint": "Objective plan, environmental programme, KPI sheet or objectives embedded in the EMS manual / management review.",
+                "expected_evidence": ["objective_plan", "record", "management_review"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "14001_6_2.objectives.measurable",
+                "text": "Objectives are measurable (where practicable): each carries a metric AND a target value, not only a declared intention.",
+                "verification_hint": "Per-entry check: number/threshold + measuring unit or defined indicator. Name the entries that are declared-only.",
+                "expected_evidence": ["objective_plan", "record"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "14001_6_2.plan.defined",
+                "text": "Planning to achieve each objective defines: actions (interventi), resources, responsibilities and deadlines, plus how results will be evaluated.",
+                "verification_hint": "Action plan columns: what, who, resources, by when, evaluation indicator (checklist 6.2.2 requires all four elements).",
+                "expected_evidence": ["objective_plan", "record"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "14001_6_2.coherence",
+                "text": "Objectives are consistent with the environmental policy, the significant environmental aspects and the risks/opportunities output (6.1).",
+                "verification_hint": "Cross-check objective themes against the policy commitments and the significant aspects in the register. Not every significant aspect needs an objective, but objectives must trace back to aspects/policy.",
+                "expected_evidence": ["objective_plan", "policy", "risk_assessment"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "14001_6_2.monitored",
+                "text": "The implementation status of the objectives is monitored, communicated and updated.",
+                "verification_hint": "Progress records, actual-vs-target tracking, objectives as a management review input, evidence of updates.",
+                "expected_evidence": ["record", "management_review", "objective_plan"],
+                "risk_if_missing": "MINOR",
+            },
+        ],
         "remediation_template": {
             "what": "Define measurable environmental objectives linked to significant aspects and compliance obligations. Document an action plan with owners, timescales, and measurement criteria.",
             "who": "Environmental Manager",
@@ -481,6 +672,38 @@ ISO14001_CLAUSES: Dict[str, Dict[str, Any]] = {
         "evidence_keywords": [
             "document control", "documented information", "records", "version control",
             "environmental records", "monitoring records", "retention",
+        ],
+        # Sprint R8 — atomic_requirements (ISO 14001 §7.5, mirroring the
+        # 9001_7_5 checklist pattern with EMS-specific records).
+        "atomic_requirements": [
+            {
+                "id": "14001_7_5.control.defined",
+                "text": "A document control approach exists covering creation, approval, distribution, revision and obsolete-copy handling for EMS documents.",
+                "verification_hint": "Procedure or manual section defining the lifecycle; applies to environmental procedures and registers.",
+                "expected_evidence": ["procedure", "quality_manual"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "14001_7_5.metadata.completeness",
+                "text": "Controlled EMS documents carry version, date and approval identification.",
+                "verification_hint": "Spot-check the aspect register, legal register, procedures: revision number, date, approver present.",
+                "expected_evidence": ["procedure", "risk_assessment", "legal_register"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "14001_7_5.records.retained",
+                "text": "Environmental records required by the standard (monitoring results, compliance evaluations, training, communications) are retained and retrievable.",
+                "verification_hint": "Records exist with dates; retention addressed.",
+                "expected_evidence": ["record", "training_record", "communication_record"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "14001_7_5.external.controlled",
+                "text": "Documented information of external origin necessary for the EMS (permits, authorisations, legal texts) is identified and controlled.",
+                "verification_hint": "Permits/authorisations referenced and current; external documents in the register.",
+                "expected_evidence": ["legal_register", "certificate", "record"],
+                "risk_if_missing": "MINOR",
+            },
         ],
         "remediation_template": {
             "what": "Implement document control for all EMS documents and records. Define retention periods for environmental monitoring records and ensure version control and approval.",
@@ -682,6 +905,38 @@ ISO14001_CLAUSES: Dict[str, Dict[str, Any]] = {
             "compliance evaluation", "legal compliance", "regulatory compliance",
             "compliance status", "legal register review", "authority inspection",
         ],
+        # Sprint R8 — atomic_requirements (TEMPLATE14001.docx §9.1.2: piano di
+        # valutazione, esiti documentati [RETAIN SI], azioni su non conformità).
+        "atomic_requirements": [
+            {
+                "id": "14001_9_1_2.evaluation.planned",
+                "text": "Compliance evaluation is planned: frequency and method for evaluating fulfilment of compliance obligations are defined.",
+                "verification_hint": "Evaluation plan/procedure with frequency; coverage of the obligations in the legal register.",
+                "expected_evidence": ["procedure", "legal_register"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "14001_9_1_2.results.documented",
+                "text": "The results of compliance evaluations are documented and retained (mandatory record).",
+                "verification_hint": "Dated evaluation reports or signed register sign-offs within the planned interval (checklist: RETAIN SI).",
+                "expected_evidence": ["record", "legal_register", "audit_report"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "14001_9_1_2.actions.on_noncompliance",
+                "text": "Actions are taken and recorded when the evaluation finds non-fulfilment of an obligation.",
+                "verification_hint": "Corrective actions linked to evaluation findings (checklist: azioni a fronte di mancata conformità).",
+                "expected_evidence": ["nonconformity_record", "record"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "14001_9_1_2.knowledge.maintained",
+                "text": "Knowledge and understanding of the current compliance status is maintained (status visible, fed to management review).",
+                "verification_hint": "Compliance status column in the register; compliance evaluation among MR inputs.",
+                "expected_evidence": ["legal_register", "management_review"],
+                "risk_if_missing": "MINOR",
+            },
+        ],
         "remediation_template": {
             "what": "Implement a formal compliance evaluation process linked to the legal register. Define evaluation frequency (at minimum annually). Record outcomes and implement corrective actions for any gaps.",
             "who": "Environmental Manager / Legal Advisor",
@@ -729,6 +984,46 @@ ISO14001_CLAUSES: Dict[str, Dict[str, Any]] = {
         "evidence_keywords": [
             "management review", "review minutes", "top management",
             "environmental performance", "review agenda", "review output",
+        ],
+        # Sprint R3 — atomic_requirements (ISO 14001:2015 §9.3 input/output
+        # list + checklist guidance). Promise P3: the engine maps the MR
+        # minutes against the required agenda items and names the missing ones.
+        "atomic_requirements": [
+            {
+                "id": "14001_9_3.held.recorded",
+                "text": "Management review is performed at planned intervals and documented (minutes or report with date and attendees including top management).",
+                "verification_hint": "MR minutes/report; date, participants, periodicity consistent with the EMS planning.",
+                "expected_evidence": ["management_review"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "14001_9_3.inputs.complete",
+                "text": "The review covers the required inputs: status of previous actions; changes in internal/external issues, compliance obligations, significant aspects, risks/opportunities; environmental performance (NC/corrective actions, monitoring results, compliance evaluation, audit results); objectives achievement; adequacy of resources; communications from interested parties (incl. complaints); opportunities for improvement.",
+                "verification_hint": "Map the minutes against the input list item by item. Name the items NOT discussed — that list is the finding.",
+                "expected_evidence": ["management_review"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "14001_9_3.compliance.input",
+                "text": "Compliance-obligation evaluation results and interested-party communications (including complaints) appear among the discussed inputs.",
+                "verification_hint": "Specific mention of legal compliance status and external communications/complaints in the minutes.",
+                "expected_evidence": ["management_review", "legal_register"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "14001_9_3.outputs.decisions",
+                "text": "Outputs include conclusions on the continuing suitability, adequacy and effectiveness of the EMS, decisions on improvement opportunities, EMS changes and resources, plus actions where objectives are not achieved.",
+                "verification_hint": "Decision/action section in the minutes with responsibilities and timescales assigned.",
+                "expected_evidence": ["management_review"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "14001_9_3.actions.followup",
+                "text": "Actions from previous management reviews are tracked: their status is reported and open items carried forward.",
+                "verification_hint": "Previous-actions status table or explicit follow-up discussion in the current minutes.",
+                "expected_evidence": ["management_review", "record"],
+                "risk_if_missing": "MINOR",
+            },
         ],
         "remediation_template": {
             "what": "Conduct and document formal management review including all required ISO 14001 §9.3 inputs. Record actions and decisions with owners and timescales.",

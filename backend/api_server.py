@@ -1,15 +1,12 @@
-﻿# ==============================================================================
-# ComplianceOS — FastAPI REST Backend
 # ==============================================================================
-# Espone tutti i moduli Python (report_generator, checklist_producer, ecc.)
-# come API REST per il frontend React.
+# Amisys QHSE — FastAPI REST Backend
+# ==============================================================================
+# API REST per il frontend React: auth + compliance engine
+# (analyze SSE, analyses, report DOCX, chat grounded, NC actions).
 #
 # Avvio:
-#   cd webapp
+#   cd backend
 #   uvicorn api_server:app --host 0.0.0.0 --port 8000 --reload
-#
-# Oppure:
-#   python api_server.py
 # ==============================================================================
 
 from __future__ import annotations
@@ -19,9 +16,6 @@ import sys
 import json
 import traceback
 import logging
-import base64
-from datetime import datetime
-from io import BytesIO
 from typing import Optional, Dict, List, Any
 
 # ── Percorsi ──────────────────────────────────────────────────────────────────
@@ -41,16 +35,15 @@ from fastapi import (
     HTTPException, Depends, Query, Body
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import asyncio
 import concurrent.futures
 
 # ── Moduli applicazione ────────────────────────────────────────────────────────
-from config import (
-    CHECKLIST_TEMPLATES, TEMPLATES_DIR, SUPPORTED_NORMS,
-    GEMINI_MODEL, PROMPTS_CHECKLIST_DIR
-)
+# Fase 2 consolidamento: rimossi gli import legacy AUDITORSEMI (config checklist,
+# pratiche, error log, statistiche). Le funzioni compliance del db_manager sono
+# importate lazy nei singoli endpoint.
 from modules.auth_manager import (
     authenticate,
     create_persistent_session,
@@ -58,32 +51,6 @@ from modules.auth_manager import (
     invalidate_session_token,
     load_users,
 )
-from modules.db_manager import (
-    save_pratica,
-    get_pratiche_utente,
-    get_all_pratiche_admin,
-    save_error_log,
-    get_errors_for_admin,
-    mark_error_resolved,
-    get_error_stats,
-    get_statistiche_utente,
-    get_statistiche_globali,
-)
-# Legacy ComplianceOS modules — not present in ComplianceOS; stub to prevent import errors
-def fill_checklist(*a, **k): raise HTTPException(status_code=501, detail="Legacy endpoint disabled")
-def generate_checklist_filename(*a, **k): return "legacy.docx"
-def detect_standard(*a, **k): raise HTTPException(status_code=501, detail="Legacy endpoint disabled")
-def produce_checklist_json_parallel(*a, **k): raise HTTPException(status_code=501, detail="Legacy endpoint disabled")
-def generate_json_filename(*a, **k): return "legacy.json"
-def recover_incomplete_clauses(*a, **k): raise HTTPException(status_code=501, detail="Legacy endpoint disabled")
-def extract_text_from_word(file_bytes: bytes): return "", None
-
-# log_activity opzionale (non tutti i db_manager la espongono)
-try:
-    from modules.db_manager import log_activity as _log_activity
-except ImportError:
-    def _log_activity(*args, **kwargs):
-        pass
 
 # ── Logging ────────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -91,144 +58,73 @@ logging.basicConfig(
     format="%(asctime)s  %(levelname)-8s  %(message)s",
     datefmt="%H:%M:%S",
 )
-logger = logging.getLogger("ComplianceOS-api")
-
-# ── GEMINI API KEY ─────────────────────────────────────────────────────────────
-# load_dotenv() sopra carica webapp/.env in os.environ.
-# In produzione (systemd) la var e' gia' impostata e override=False la rispetta.
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-
-# ── Helper: estrazione testo da DOCX o PDF ────────────────────────────────────
-def _extract_report_text(file_bytes: bytes, filename: str):
-    """
-    Estrae testo grezzo da un file DOCX o PDF.
-    Ritorna (text: str, error: str|None).
-    """
-    name = (filename or "").lower()
-    if name.endswith(".pdf"):
-        try:
-            import PyPDF2
-            reader = PyPDF2.PdfReader(BytesIO(file_bytes))
-            pages = [page.extract_text() or "" for page in reader.pages]
-            text = "\n\n".join(p for p in pages if p.strip())
-            if not text.strip():
-                return None, (
-                    "Il PDF non contiene testo estraibile. "
-                    "Se è scansionato usa il file Word (.docx) del report."
-                )
-            return text, None
-        except Exception as e:
-            return None, f"Errore lettura PDF: {e}"
-    else:
-        # DOCX / DOC — usa il modulo dedicato
-        return extract_text_from_word(file_bytes)
-
-
+logger = logging.getLogger("Amisys QHSE-api")
 
 # ── App ────────────────────────────────────────────────────────────────────────
 app = FastAPI(
-    title="ComplianceOS API",
+    title="Amisys QHSE API",
     version="0.1.0-mvp",
-    description="REST backend per ComplianceOS — Five Rise Consultancy",
+    description="REST backend per Amisys QHSE — Five Rise Consultancy",
 )
+
+# Fase 3 consolidamento — CORS esplicito da env, niente più wildcard "*"
+# (incompatibile con allow_credentials e inaccettabile per la demo via tunnel:
+# aggiungere l'origin del tunnel a CORS_ORIGINS quando serve).
+_cors_origins = [
+    o.strip()
+    for o in os.environ.get(
+        "CORS_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173",
+    ).split(",")
+    if o.strip()
+]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:4173",
-        "*",  # override in produzione
-    ],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ── Helper: mapping campi DB → API ─────────────────────────────────────────────
-def _map_pratica(p: Dict) -> Dict:
-    """Rinomina i campi DB SQLite nei nomi attesi dal frontend React."""
-    return {
-        "id": p.get("id"),
-        "type": p.get("tipo"),
-        "company_name": p.get("azienda"),
-        "norm": p.get("norma"),
-        "created_date": p.get("data_creazione"),
-        "created_by": p.get("user_id"),
-        "status": p.get("status", "completed"),
-        "processing_time_seconds": p.get("processing_time_seconds"),
-        "filename": p.get("file_output_name"),
-        "file_size": p.get("file_size"),
-        "note": p.get("note"),
-    }
+# ── Autenticazione + ownership ───────────────────────────────────────────────
+# Fase B: gli helper vivono in api_deps.py (riusati dai router modulari senza
+# import circolari). Ri-esportati qui così gli endpoint esistenti non cambiano.
+from api_deps import (  # noqa: E402
+    _get_current_user,
+    _require_analysis_access,
+    _require_folder_access,
+    _require_document_access,
+)
 
 
-def _map_error(e: Dict) -> Dict:
-    """Rinomina i campi DB degli errori nei nomi attesi dal frontend."""
-    return {
-        "id": e.get("id"),
-        "created_date": e.get("created_at"),
-        "created_by": e.get("user_id"),
-        "tab": e.get("tab_source"),
-        "error_type": e.get("error_type"),
-        "company_name": e.get("azienda"),
-        "message": e.get("error_message"),
-        "stack_trace": e.get("stack_trace"),
-        "auto_recovered": bool(e.get("auto_recovered")),
-        "resolved": bool(e.get("resolved")),
-        "resolved_by": e.get("resolved_by"),
-        "resolved_at": e.get("resolved_at"),
-    }
-
-# ── Autenticazione ─────────────────────────────────────────────────────────────
-def _get_current_user(authorization: Optional[str] = Header(None)) -> Dict:
-    """Dependency: valida Bearer token → restituisce dict utente."""
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Token non fornito")
-    token = authorization.removeprefix("Bearer ").strip()
-    # validate_session_token restituisce Optional[str] (username), non un dict
-    username = validate_session_token(token)
-    if not username:
-        raise HTTPException(status_code=401, detail="Token non valido o scaduto")
-    # Carica il dict completo dell'utente da users.json
-    users = load_users()
-    user_data = users.get(username.lower(), users.get(username, {}))
-    return {
-        "username": username,
-        "role": user_data.get("role", "auditor"),
-        "email": "",                                  # users.json non ha campo email
-        "display_name": user_data.get("name", username),
-        "name": user_data.get("name", username),
-    }
+def _audit(user, action, entity_type=None, entity_id=None, detail=None) -> None:
+    """Wrapper sottile sull'audit trail (Fase B). Lazy import + non solleva mai:
+    un audit fallito non deve mai rompere la richiesta."""
+    try:
+        from modules.audit_log import log_audit
+        log_audit(user, action, entity_type, entity_id, detail)
+    except Exception:
+        pass
 
 
-def _require_admin(user: Dict = Depends(_get_current_user)) -> Dict:
-    """Dependency: richiede ruolo admin."""
-    if user.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Accesso riservato agli amministratori")
-    return user
+# ── Router modulari (Fase C+) ────────────────────────────────────────────────
+from routers.dms import router as dms_router  # noqa: E402
+from routers.notifications import router as notifications_router  # noqa: E402
+from routers.tasks import router as tasks_router  # noqa: E402
+app.include_router(dms_router)
+app.include_router(notifications_router)
+app.include_router(tasks_router)
+
+# Fase E — scheduler scadenze/retention (no-op se SCHEDULER_ENABLED non settato)
+from scheduler import install_scheduler  # noqa: E402
+install_scheduler(app)
+
 
 # ── Modelli Pydantic ───────────────────────────────────────────────────────────
 class LoginRequest(BaseModel):
     username: str
     password: str
-
-
-class CreatePraticaRequest(BaseModel):
-    type: str
-    company_name: Optional[str] = ""
-    norm: Optional[str] = ""
-    status: Optional[str] = "completed"
-    processing_time_seconds: Optional[int] = None
-    clauses_total: Optional[int] = None
-    clauses_complete: Optional[int] = None
-    filename: Optional[str] = None
-
-
-class ResolveErrorRequest(BaseModel):
-    resolved_by: Optional[str] = ""
-    resolved: Optional[bool] = True
-    resolved_date: Optional[str] = None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -237,12 +133,12 @@ class ResolveErrorRequest(BaseModel):
 
 @app.get("/api/health")
 async def health():
+    """Stato del servizio + configurazione provider (mai le chiavi)."""
     return {
         "status": "ok",
-        "api_key_configured": bool(GEMINI_API_KEY),
-        "templates_dir": TEMPLATES_DIR,
-        "supported_norms": SUPPORTED_NORMS,
-        "gemini_model": GEMINI_MODEL,
+        "azure_openai_configured": bool(os.environ.get("AZURE_OPENAI_API_KEY", "").strip()),
+        "azure_di_configured": bool(os.environ.get("AZURE_DI_KEY", "").strip()),
+        "supported_norms": ["ISO 9001:2015", "ISO 14001:2015", "ISO 45001:2018"],
     }
 
 
@@ -255,8 +151,10 @@ async def login(body: LoginRequest):
     # authenticate() restituisce (bool, Optional[str]) — NON un dict utente
     success, error_msg = authenticate(body.username, body.password)
     if not success:
+        _audit(body.username, "login_failed", "session", None, {"reason": error_msg or "invalid"})
         raise HTTPException(status_code=401, detail=error_msg or "Credenziali non valide")
     token = create_persistent_session(body.username)
+    _audit(body.username, "login", "session", None)
     # Carica i dati utente da users.json per costruire la risposta
     users = load_users()
     user_data = users.get(body.username.lower(), users.get(body.username, {}))
@@ -293,812 +191,18 @@ async def logout(authorization: Optional[str] = Header(None)):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PRATICHE
+# COMPLIANCE — REQUIREMENT SETS (Fase 7, PRD §1.4.4b)
 # ══════════════════════════════════════════════════════════════════════════════
 
-@app.get("/api/pratiche")
-async def list_pratiche(
-    limit: int = Query(50),
-    sort: Optional[str] = Query(None),
-    user: Dict = Depends(_get_current_user),
-):
-    """Lista pratiche.
-    - Admin: vede tutte le pratiche del sistema.
-    - Auditor: vede solo le sue.
+@app.get("/api/compliance/requirement-sets")
+async def list_requirement_sets_endpoint(user: Dict = Depends(_get_current_user)):
+    """Set di criteri operativi disponibili (data/requirement_sets/*.yaml).
+
+    I `label` ritornati possono essere inclusi in `norms` del wizard accanto
+    agli standard ISO: il motore li valuta con lo stesso Stage A + Stage B.
     """
-    if user.get("role") == "admin":
-        pratiche = get_all_pratiche_admin()
-    else:
-        pratiche = get_pratiche_utente(user["username"], limit=limit)
-
-    # Applica limite
-    if limit and limit > 0:
-        pratiche = pratiche[:limit]
-
-    # Ordina per data (i DB già ordinano DESC, ma rispetta richiesta frontend)
-    if sort and sort.lstrip("-") in ("created_date", "data_creazione"):
-        reverse = sort.startswith("-")
-        pratiche = sorted(
-            pratiche,
-            key=lambda p: p.get("data_creazione") or "",
-            reverse=reverse,
-        )
-
-    return [_map_pratica(p) for p in pratiche]
-
-
-@app.post("/api/pratiche")
-async def create_pratica(
-    body: CreatePraticaRequest,
-    user: Dict = Depends(_get_current_user),
-):
-    """Crea manualmente una pratica (usato dal frontend per i flussi mock/fallback)."""
-    try:
-        save_pratica(
-            user_id=user["username"],
-            tipo=body.type,
-            file_output_path="",
-            file_output_name=body.filename or "",
-            azienda=body.company_name or "",
-            norma=body.norm or "",
-            file_size=0,
-            processing_time=body.processing_time_seconds or 0,
-        )
-        return {"ok": True}
-    except Exception as e:
-        logger.error(f"Errore creazione pratica: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# ADMIN — LOG ERRORI
-# ══════════════════════════════════════════════════════════════════════════════
-
-@app.get("/api/admin/errors")
-async def list_errors(
-    resolved: Optional[str] = Query(None),
-    limit: int = Query(200),
-    user: Dict = Depends(_get_current_user),   # tutti possono leggere per il badge
-):
-    """
-    Lista errori. Query param `resolved=false` per soli non risolti (badge sidebar).
-    Solo admin vede la lista completa; per gli auditor restituisce solo il count.
-    """
-    errors = get_errors_for_admin(limit=limit)
-
-    # Filtra per stato se richiesto
-    if resolved == "false":
-        errors = [e for e in errors if not e.get("resolved")]
-    elif resolved == "true":
-        errors = [e for e in errors if e.get("resolved")]
-
-    # Gli auditor ottengono solo il count (non i dettagli)
-    if user.get("role") != "admin":
-        return {"count": len(errors)}
-
-    return [_map_error(e) for e in errors]
-
-
-@app.patch("/api/admin/errors/{error_id}")
-async def resolve_error(
-    error_id: int,
-    body: ResolveErrorRequest,
-    user: Dict = Depends(_require_admin),
-):
-    """Segna un errore come risolto."""
-    try:
-        resolved_by = body.resolved_by or user.get("email", user.get("username", ""))
-        mark_error_resolved(error_id, resolved_by)
-        return {"ok": True}
-    except Exception as e:
-        logger.error(f"Errore resoluzione error_id={error_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# ADMIN — STATISTICHE
-# ══════════════════════════════════════════════════════════════════════════════
-
-@app.get("/api/admin/stats")
-async def admin_stats(user: Dict = Depends(_require_admin)):
-    stats = get_statistiche_globali()
-    return {
-        "total_practices": stats.get("totale", 0),
-        "avg_time_seconds": stats.get("tempo_medio_secondi", 0),
-        "success_rate": stats.get("tasso_successo", 0),
-        "today_count": stats.get("oggi", 0),
-        "per_user": stats.get("per_utente", {}),
-    }
-
-
-@app.get("/api/admin/error-stats")
-async def admin_error_stats(user: Dict = Depends(_require_admin)):
-    return get_error_stats()
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB 1 — GENERA REPORT WORD da ZIP  (SSE streaming)
-# ══════════════════════════════════════════════════════════════════════════════
-
-@app.post("/api/report/process")
-async def process_report(
-    file: UploadFile = File(...),
-    user: Dict = Depends(_get_current_user),
-):
-    """
-    Riceve file ZIP, processa con Gemini, streamma il progresso reale via SSE.
-
-    Stream di eventi SSE:
-      data: {"pct": 12, "msg": "Estrazione documenti..."}
-      data: {"pct": 45, "msg": "Analisi AI batch 3/8..."}
-      data: {"done": true, "filename": "...", "word_base64": "...", "stats": {...}, "company_name": "..."}
-      data: {"error": "messaggio errore"}
-    """
-    from modules.report_generator import process_zip_and_generate_report
-
-    api_key = GEMINI_API_KEY
-    if not api_key:
-        raise HTTPException(status_code=500, detail="Chiave API Gemini non configurata nel server")
-
-    file_bytes = await file.read()
-
-    if len(file_bytes) > 1 * 1024 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="File troppo grande (limite 1 GB)")
-
-    original_filename = file.filename or "upload.zip"
-    username = user["username"]
-    logger.info(f"[Tab1] {username} → {original_filename} ({len(file_bytes)/1024/1024:.1f} MB)")
-
-    loop = asyncio.get_event_loop()
-    queue: asyncio.Queue = asyncio.Queue()
-
-    def progress_cb(pct_raw, msg: str):
-        """Bridge sincrono → async queue. pct_raw può essere 0-1 o 0-100."""
-        pct = int(pct_raw * 100) if pct_raw <= 1.0 else int(pct_raw)
-        asyncio.run_coroutine_threadsafe(
-            queue.put({"pct": pct, "msg": msg}), loop
-        )
-
-    # ── PRE-FLIGHT: analisi ZIP per warning early ────────────────────────────
-    # Counto file e stimo tempi prima di iniziare il processing pesante.
-    # Errori silenziosi: se la validazione fallisce, non blocchiamo niente.
-    preflight_warnings = []
-    try:
-        import zipfile as _zf
-        from io import BytesIO as _BIO
-        with _zf.ZipFile(_BIO(file_bytes)) as zfp:
-            file_count = sum(1 for n in zfp.namelist() if not n.endswith("/"))
-        size_mb = len(file_bytes) / (1024 * 1024)
-
-        if size_mb > 200:
-            preflight_warnings.append(
-                f"ZIP molto grande ({size_mb:.0f} MB). Tempo di elaborazione stimato: "
-                f"{int(size_mb * 0.4)}-{int(size_mb * 0.7)} minuti. "
-                f"Per stabilità ottimale, considera di splittare in 2 batch."
-            )
-        if file_count > 200:
-            preflight_warnings.append(
-                f"Molti file ({file_count}). Possibili rallentamenti su file con immagini scansionate."
-            )
-        if size_mb > 300 or file_count > 300:
-            preflight_warnings.append(
-                "ATTENZIONE: dimensioni elevate aumentano il rischio di timeout. "
-                "Se l'elaborazione fallisce, splitta lo ZIP."
-            )
-    except Exception as _exc:
-        # Non blocchiamo mai per fallimenti pre-flight
-        logger.debug(f"[Tab1] preflight skipped: {_exc}")
-
-    async def event_stream():
-        # Pubblica warnings pre-flight come primo evento (se presenti)
-        if preflight_warnings:
-            yield f"data: {json.dumps({'preflight_warnings': preflight_warnings}, ensure_ascii=False)}\n\n"
-
-        def _run():
-            return process_zip_and_generate_report(
-                input_source=file_bytes,
-                api_key=api_key,
-                progress_callback=progress_cb,
-                status_callback=None,
-                input_type="zip",
-                filename=original_filename,
-            )
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = loop.run_in_executor(pool, _run)
-
-            # Drena la queue mentre il thread lavora
-            while not future.done():
-                try:
-                    event = await asyncio.wait_for(queue.get(), timeout=0.3)
-                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-                except asyncio.TimeoutError:
-                    yield ": keepalive\n\n"   # evita timeout nginx/proxy
-
-            # Svuota eventi residui
-            while not queue.empty():
-                event = queue.get_nowait()
-                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-
-            # Risultato
-            try:
-                word_bytes, stats, filename = future.result()
-                company_name = stats.get("company_name", "")
-
-                try:
-                    save_pratica(
-                        user_id=username, tipo="report",
-                        file_output_path="", file_output_name=filename,
-                        azienda=company_name, norma="",
-                        file_size=len(word_bytes),
-                        processing_time=int(stats.get("total_time", 0)),
-                    )
-                    _log_activity(username, "report_generated", f"Azienda: {company_name}")
-                except Exception:
-                    pass
-
-                logger.info(f"[Tab1] OK → {filename} ({len(word_bytes)//1024} KB)")
-
-                # Evento summary se ci sono file falliti (frontend può mostrarli prima del download)
-                ff = stats.get("failed_files") or []
-                if ff:
-                    summary = {
-                        "summary": True,
-                        "files_total": stats.get("total_docs", 0),
-                        "files_processed": stats.get("docs_with_text", 0),
-                        "files_failed": len(ff),
-                        "failed_breakdown": [
-                            {"filename": f.get("filename"),
-                             "type": f.get("type", "unknown"),
-                             "reason": str(f.get("reason", ""))[:200]}
-                            for f in ff[:50]   # cap a 50 per non gonfiare payload
-                        ],
-                    }
-                    yield f"data: {json.dumps(summary, ensure_ascii=False)}\n\n"
-
-                done_event = {
-                    "done": True,
-                    "filename": filename,
-                    "word_base64": base64.b64encode(word_bytes).decode(),
-                    "stats": stats,
-                    "company_name": company_name,
-                }
-                yield f"data: {json.dumps(done_event, ensure_ascii=False)}\n\n"
-
-            except Exception as e:
-                tb = traceback.format_exc()
-                logger.error(f"[Tab1] ERRORE: {e}\n{tb}")
-                try:
-                    save_error_log(
-                        user_id=username, error_type="generation",
-                        error_message=str(e)[:500], tab_source="tab1",
-                        azienda="", stack_trace=tb[:2000],
-                    )
-                except Exception:
-                    pass
-                yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# PIPELINE V2 (Metodo A — Triage Funnel) — endpoint isolato per testing
-# Vedi docs/V2_EXECUTION_TRACKER.md
-# ══════════════════════════════════════════════════════════════════════════════
-
-@app.get("/api/v2/health")
-async def v2_health():
-    """Health check del namespace V2 (Fase 0). Non richiede auth."""
-    from v2.pipeline import process_v2_stub
-    return process_v2_stub()
-
-
-
-@app.post("/api/v2/report/process")
-async def v2_process_report(
-    file: UploadFile = File(...),
-    dry_run: bool = False,
-    legacy_events: bool = False,
-    user: Dict = Depends(_get_current_user),
-):
-    """
-    Endpoint V2 reale (Fase 8). Streaming SSE typed events.
-
-    Query params:
-        dry_run=true → nessuna chiamata Gemini (testing senza consumare token)
-        legacy_events=true → eventi tradotti in formato V1 `{pct, msg}`
-                              per compatibilità con frontend V1 esistente
-
-    Body: multipart/form-data con `file` ZIP.
-
-    Auth: come V1.
-
-    Stream eventi SSE typed (vedi v2/schemas/events.py): session.start, phase.*,
-    file.*, llm.token, error, heartbeat, done.
-    Con legacy_events=true: i suddetti vengono tradotti in formato V1.
-    """
-    from v2.legacy_adapter import LegacyAdapter
-    from v2.pipeline import process_zip_v2
-    from v2.progress_store import ProgressStore
-    from v2.schemas.events import PipelinePhase
-    from v2.sse_emitter import SSEEmitter
-    from v2.watchdog import HeartbeatWatchdog
-
-    api_key = GEMINI_API_KEY
-    if not api_key and not dry_run:
-        raise HTTPException(status_code=500, detail="GEMINI_API_KEY non configurata")
-
-    file_bytes = await file.read()
-
-    if len(file_bytes) > 1 * 1024 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="File troppo grande (limite 1 GB)")
-
-    original_filename = file.filename or "upload.zip"
-    username = user["username"]
-    session_id = datetime.now().strftime("%Y%m%d_%H%M%S_") + username[:20].replace(" ", "_")
-    logger.info(
-        f"[V2 Tab1] {username} → {original_filename} "
-        f"({len(file_bytes)/1024/1024:.1f} MB) session={session_id} dry_run={dry_run}"
-    )
-
-    loop = asyncio.get_event_loop()
-    queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
-
-    store = ProgressStore(session_id)
-    emitter = SSEEmitter(session_id=session_id, store=store, queue=queue, loop=loop)
-    legacy_adapter = LegacyAdapter() if legacy_events else None
-
-    # Watchdog per heartbeat ogni 5s
-    wd = HeartbeatWatchdog(emitter, interval_seconds=5.0,
-                            get_queue_depth=lambda: queue.qsize())
-
-    def _serialize_event(event_dict):
-        """Serializza evento. Se legacy_events: traduce in formato V1."""
-        if legacy_adapter is None:
-            return SSEEmitter.serialize_for_sse(event_dict)
-        translated = legacy_adapter.translate(event_dict)
-        if translated is None:
-            return None  # evento V2 senza equivalente V1 (es. heartbeat)
-        return SSEEmitter.serialize_for_sse(translated)
-
-    async def event_stream():
-        # Evento iniziale
-        emitter.emit_session_start(
-            user=username,
-            total_size_mb=round(len(file_bytes) / 1024 / 1024, 1),
-            input_kind="zip",
-        )
-
-        wd.start()
-
-        def _run_pipeline():
-            try:
-                return process_zip_v2(
-                    zip_bytes=file_bytes,
-                    session_id=session_id,
-                    api_key=api_key,
-                    emitter=emitter,
-                    dry_run=dry_run,
-                    zip_filename=file.filename or "",
-                )
-            except BaseException as e:
-                # Cattura ANCHE BaseException (MemoryError, SystemExit, ecc.)
-                # per garantire che l'utente riceva sempre un evento di errore
-                emitter.emit_error(
-                    __import__("v2.schemas.events", fromlist=["ErrorKind"]).ErrorKind.UNKNOWN,
-                    f"pipeline_crashed: {e!r}",
-                )
-                return {"success": False, "error": f"crashed: {e!r}"}
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = loop.run_in_executor(pool, _run_pipeline)
-
-            # Drain la queue mentre la pipeline lavora
-            while not future.done():
-                try:
-                    event = await asyncio.wait_for(queue.get(), timeout=0.5)
-                    line = _serialize_event(event)
-                    if line:
-                        yield line
-                except asyncio.TimeoutError:
-                    yield ": keepalive\n\n"
-
-            # Svuota eventi residui
-            while not queue.empty():
-                event = queue.get_nowait()
-                line = _serialize_event(event)
-                if line:
-                    yield line
-
-            # Risultato
-            try:
-                result = future.result()
-                if result.get("success"):
-                    output_path = result.get("output_path")
-                    if output_path and os.path.exists(output_path):
-                        with open(output_path, "rb") as f:
-                            word_bytes = f.read()
-                        try:
-                            save_pratica(
-                                user_id=username, tipo="report_v2",
-                                file_output_path="", file_output_name=result.get("output_filename", ""),
-                                azienda=result.get("company_name", ""), norma="",
-                                file_size=len(word_bytes),
-                                processing_time=int(result.get("stats", {}).get("duration_seconds", 0)),
-                            )
-                            _log_activity(username, "v2_report_generated",
-                                           f"Azienda: {result.get('company_name')}")
-                        except Exception:
-                            pass
-
-                        done_payload = {
-                            "type": "done_with_payload",
-                            # FIX 14: il frontend useSSEProcess controlla
-                            # event.done == true per chiudere il loop SSE e
-                            # invocare onDone(). Senza questo flag il payload
-                            # finale viene interpretato come "progress event"
-                            # con pct=undefined → setProgress(0) e la UI
-                            # sembra "ripartire da zero" alla fine della run.
-                            "done": True,
-                            "session_id": session_id,
-                            "filename": result.get("output_filename"),
-                            "word_base64": base64.b64encode(word_bytes).decode(),
-                            "company_name": result.get("company_name"),
-                            "stats": result.get("stats", {}),
-                        }
-                        yield SSEEmitter.serialize_for_sse(done_payload)
-            except Exception as e:
-                logger.error(f"[V2 Tab1] post-pipeline: {e}")
-            finally:
-                wd.stop(timeout=2.0)
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
-
-
-@app.get("/api/v2/report/resume/{session_id}")
-async def v2_report_resume(session_id: str, user: Dict = Depends(_get_current_user)):
-    """Replay eventi SSE per recovery post-disconnessione."""
-    from v2.recovery_handler import replay_session_sse_async
-
-    async def replay_gen():
-        async for line in replay_session_sse_async(session_id):
-            yield line
-
-    return StreamingResponse(
-        replay_gen(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
-
-
-@app.get("/api/v2/report/status/{session_id}")
-async def v2_report_status(session_id: str, user: Dict = Depends(_get_current_user)):
-    """Probe leggero stato sessione V2."""
-    from v2.recovery_handler import session_status
-    return session_status(session_id)
-
-
-@app.get("/api/v2/report/download/{session_id}/section/{section_index}")
-async def v2_download_section(
-    session_id: str, section_index: int,
-    user: Dict = Depends(_get_current_user),
-):
-    """Download anticipato di una sezione partial."""
-    from fastapi.responses import Response
-    from v2.section_download_handler import section_response
-
-    resp = section_response(session_id, section_index)
-    if resp.status_code != 200:
-        raise HTTPException(status_code=resp.status_code, detail=resp.error)
-    return Response(content=resp.body, media_type=resp.content_type, headers=resp.headers)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB 2 — PRODUCI CHECKLIST JSON da Report Word  (SSE streaming)
-# ══════════════════════════════════════════════════════════════════════════════
-
-@app.post("/api/checklist/produce")
-async def produce_checklist(
-    file: UploadFile = File(...),
-    norm: str = Form(...),
-    company_name: Optional[str] = Form(""),
-    user: Dict = Depends(_get_current_user),
-):
-    """
-    Riceve Report Word + norma, genera JSON clausole, streamma il progresso via SSE.
-
-    Stream di eventi SSE:
-      data: {"pct": 15, "msg": "Estrazione testo dal Report..."}
-      data: {"pct": 60, "msg": "✓ Gruppo 3/6 completato (8 clausole)"}
-      data: {"done": true, "json": {...}, "filename": "..."}
-      data: {"error": "messaggio errore"}
-    """
-    api_key = GEMINI_API_KEY
-    if not api_key:
-        raise HTTPException(status_code=500, detail="Chiave API Gemini non configurata nel server")
-
-    if norm not in SUPPORTED_NORMS:
-        logger.warning(f"[Tab2] Norma non standard: '{norm}'")
-
-    report_bytes = await file.read()
-    username = user["username"]
-    logger.info(f"[Tab2] {username} → norma={norm} ({len(report_bytes)//1024} KB)")
-
-    loop = asyncio.get_event_loop()
-    queue: asyncio.Queue = asyncio.Queue()
-
-    def progress_cb(pct_raw, msg: str):
-        """produce_checklist_json_parallel chiama con int 0-100."""
-        pct = int(pct_raw) if pct_raw > 1 else int(pct_raw * 100)
-        asyncio.run_coroutine_threadsafe(
-            queue.put({"pct": pct, "msg": msg}), loop
-        )
-
-    async def event_stream():
-        def _run():
-            return produce_checklist_json_parallel(
-                report_input=report_bytes,
-                norma=norm,
-                api_key=api_key,
-                progress_callback=progress_cb,
-                company_name_override=company_name or "",
-            )
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = loop.run_in_executor(pool, _run)
-
-            while not future.done():
-                try:
-                    event = await asyncio.wait_for(queue.get(), timeout=0.3)
-                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-                except asyncio.TimeoutError:
-                    yield ": keepalive\n\n"
-
-            while not queue.empty():
-                event = queue.get_nowait()
-                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-
-            try:
-                json_result, error = future.result()
-
-                if error:
-                    yield f"data: {json.dumps({'error': str(error)})}\n\n"
-                    return
-
-                azienda = json_result.get("azienda", "")
-                json_filename = generate_json_filename(json_result)
-                json_bytes_size = len(json.dumps(json_result, ensure_ascii=False).encode())
-
-                try:
-                    save_pratica(
-                        user_id=username, tipo="checklist_json",
-                        file_output_path="", file_output_name=json_filename,
-                        azienda=azienda, norma=norm, file_size=json_bytes_size,
-                    )
-                    _log_activity(username, "json_generated", f"Norma: {norm}, Azienda: {azienda}")
-                except Exception:
-                    pass
-
-                logger.info(f"[Tab2] OK → {json_filename}")
-                done_event = {"done": True, "json": json_result, "filename": json_filename}
-                yield f"data: {json.dumps(done_event, ensure_ascii=False)}\n\n"
-
-            except Exception as e:
-                tb = traceback.format_exc()
-                logger.error(f"[Tab2] ERRORE: {e}\n{tb}")
-                try:
-                    save_error_log(
-                        user_id=username, error_type="api",
-                        error_message=str(e)[:500], tab_source="tab2",
-                        azienda=company_name or "", stack_trace=tb[:2000],
-                    )
-                except Exception:
-                    pass
-                yield f"data: {json.dumps({'error': str(e)})}\n\n"
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB 2 — RECOVERY CLAUSOLE INCOMPLETE
-# ══════════════════════════════════════════════════════════════════════════════
-
-@app.post("/api/checklist/recover")
-async def recover_clauses(
-    file: UploadFile = File(...),
-    json_data: str = Form(...),          # JSON serializzato come stringa
-    incomplete_keys: str = Form(...),    # lista JSON serializzata, es. ["4.1","4.2"]
-    norm: str = Form(...),
-    user: Dict = Depends(_get_current_user),
-):
-    """
-    Recupera clausole incomplete rianalizzando il report Word originale.
-    Risponde come SSE stream con eventi di progresso e infine:
-      data: {"done": true, "json": {...}, "still_missing": [...]}
-    """
-    api_key = GEMINI_API_KEY
-    if not api_key:
-        raise HTTPException(status_code=500, detail="Chiave API Gemini non configurata")
-
-    try:
-        current_json = json.loads(json_data)
-        keys_to_recover: List[str] = json.loads(incomplete_keys)
-    except Exception:
-        raise HTTPException(status_code=422, detail="Formato json_data o incomplete_keys non valido")
-
-    if not keys_to_recover:
-        async def _immediate():
-            yield f"data: {json.dumps({'done': True, 'json': current_json, 'still_missing': []})}\n\n"
-        return StreamingResponse(_immediate(), media_type="text/event-stream",
-                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
-
-    report_bytes = await file.read()
-    username = user["username"]
-    logger.info(f"[Tab2/recover] {username} → {len(keys_to_recover)} clausole, norma={norm}")
-
-    loop = asyncio.get_event_loop()
-    queue: asyncio.Queue = asyncio.Queue()
-
-    def progress_cb(pct_raw, msg: str):
-        pct = int(pct_raw) if pct_raw > 1 else int(pct_raw * 100)
-        asyncio.run_coroutine_threadsafe(queue.put({"pct": pct, "msg": msg}), loop)
-
-    async def event_stream():
-        # Estrai testo (veloce, sincrono)
-        yield f"data: {json.dumps({'pct': 5, 'msg': 'Estrazione testo dal report...'})}\n\n"
-        report_text, extract_error = _extract_report_text(report_bytes, file.filename or "report.docx")
-        if extract_error or not report_text:
-            yield f"data: {json.dumps({'error': f'Impossibile estrarre testo: {extract_error}'})}\n\n"
-            return
-
-        yield f"data: {json.dumps({'pct': 10, 'msg': f'Avvio recupero {len(keys_to_recover)} clausole...'})}\n\n"
-
-        def _run():
-            return recover_incomplete_clauses(
-                json_data=current_json,
-                incomplete_keys=keys_to_recover,
-                report_text=report_text,
-                norma=norm,
-                api_key=api_key,
-                progress_callback=progress_cb,
-            )
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = loop.run_in_executor(pool, _run)
-
-            while not future.done():
-                try:
-                    event = await asyncio.wait_for(queue.get(), timeout=0.3)
-                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-                except asyncio.TimeoutError:
-                    yield ": keepalive\n\n"
-
-            while not queue.empty():
-                event = queue.get_nowait()
-                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-
-            try:
-                updated_json, still_missing = future.result()
-                logger.info(
-                    f"[Tab2/recover] OK — recuperate {len(keys_to_recover) - len(still_missing)}, "
-                    f"ancora mancanti {len(still_missing)}"
-                )
-                done_event = {"done": True, "json": updated_json, "still_missing": still_missing}
-                yield f"data: {json.dumps(done_event, ensure_ascii=False)}\n\n"
-            except Exception as e:
-                tb = traceback.format_exc()
-                logger.error(f"[Tab2/recover] ERRORE: {e}\n{tb}")
-                yield f"data: {json.dumps({'error': str(e)})}\n\n"
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# TAB 3 — COMPILA CHECKLIST Word/Excel da JSON
-# ══════════════════════════════════════════════════════════════════════════════
-
-@app.post("/api/checklist/compile")
-async def compile_checklist(
-    body: Dict = Body(...),
-    user: Dict = Depends(_get_current_user),
-):
-    """
-    Riceve il JSON checklist, riempie il template Word/Excel, restituisce il file.
-
-    Request body: { "norma": ..., "azienda": ..., "clausole": { ... } }
-
-    Response JSON:
-    {
-      "filename": "Checklist_ISO9001_Azienda_2025-01-01.docx",
-      "file_base64": "...",      // base64 del file .docx o .xlsx
-      "mime_type": "application/...",
-      "norm": "ISO 9001"
-    }
-    """
-    try:
-        norma, template_path = detect_standard(body)
-
-        if not template_path or not os.path.exists(template_path):
-            raise HTTPException(
-                status_code=404,
-                detail=(
-                    f"Template non trovato per norma '{norma}'. "
-                    f"Aggiungi il file in: {TEMPLATES_DIR}"
-                ),
-            )
-
-        logger.info(f"[Tab3] {user['username']} → norma={norma}  template={os.path.basename(template_path)}")
-
-        word_bytes, error = fill_checklist(body, template_path)
-
-        if error:
-            raise HTTPException(status_code=500, detail=str(error))
-
-        filename = generate_checklist_filename(body, template_path)
-        azienda = body.get("azienda", "")
-
-        if filename.endswith(".xlsx"):
-            mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        else:
-            mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-
-        save_pratica(
-            user_id=user["username"],
-            tipo="checklist_word",
-            file_output_path="",
-            file_output_name=filename,
-            azienda=azienda,
-            norma=norma or "",
-            file_size=len(word_bytes),
-        )
-        _log_activity(
-            user["username"], "word_compiled",
-            f"Norma: {norma}, Azienda: {azienda}",
-        )
-
-        logger.info(f"[Tab3] OK → {filename}  ({len(word_bytes)//1024} KB)")
-
-        return {
-            "filename": filename,
-            "file_base64": base64.b64encode(word_bytes).decode(),
-            "mime_type": mime,
-            "norm": norma,
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        tb = traceback.format_exc()
-        logger.error(f"[Tab3] ERRORE: {e}\n{tb}")
-        try:
-            azienda = body.get("azienda", "") if isinstance(body, dict) else ""
-            save_error_log(
-                user_id=user["username"],
-                error_type="generation",
-                error_message=str(e)[:500],
-                tab_source="tab3",
-                azienda=azienda,
-                stack_trace=tb[:2000],
-            )
-        except Exception:
-            pass
-        raise HTTPException(status_code=500, detail=str(e))
+    from compliance.custom_requirements import list_requirement_sets
+    return list_requirement_sets()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1148,6 +252,105 @@ async def compliance_analyze(
         norms=norms_list,
     )
 
+    return _pipeline_sse_response(context=context, username=username, zip_bytes=file_bytes)
+
+
+class AnalyzeDmsRequest(BaseModel):
+    company_name: str
+    sector: str
+    employee_range: str
+    certified: str
+    sites_count: str
+    norms: List[str]
+    scope: str = "all"                 # all | folder | updated_since
+    folder_id: Optional[int] = None
+    updated_since: Optional[str] = None  # YYYY-MM-DD
+
+
+@app.post("/api/compliance/analyze-dms")
+async def compliance_analyze_dms(
+    body: AnalyzeDmsRequest,
+    user: Dict = Depends(_get_current_user),
+):
+    """Fase D (PRD §1.4.3) — analizza i documenti già nel DMS secondo uno scope
+    (tutto / cartella / aggiornati da una data). Costruisce il documents_override
+    dai testi estratti del DMS (Phase 1 saltata) e rilancia la pipeline.
+
+    A fine run, fa il backfill del doc_type dei documenti DMS dalle evidence
+    card (autorevole, marca doc_type_source='engine'); il PATCH manuale vince.
+    """
+    from compliance.schemas import CompanyContext
+    import modules.dms_manager as dms
+
+    username = user["username"]
+    if body.scope == "folder":
+        if body.folder_id is None:
+            raise HTTPException(status_code=422, detail="folder_id is required for scope=folder")
+        _require_folder_access(body.folder_id, user)
+
+    docs = dms.documents_for_scope(
+        username, scope=body.scope, folder_id=body.folder_id, updated_since=body.updated_since,
+    )
+    if not docs:
+        raise HTTPException(status_code=409, detail="No documents in the selected scope")
+
+    context = CompanyContext(
+        company_name=body.company_name, sector=body.sector,
+        employee_range=body.employee_range, certified=body.certified,
+        sites_count=body.sites_count, norms=body.norms,
+    )
+
+    # filename → (document_id, version) per il backfill post-analisi
+    by_name = {d["filename"]: (d["document_id"], d["version"]) for d in docs}
+
+    def _backfill(result, outcome) -> None:
+        """Aggiorna doc_type/expiry dei documenti DMS dalle evidence card,
+        matchando per filename DENTRO il set analizzato (mai globale)."""
+        import yaml as _yaml
+        raw = outcome.get("evidence_yaml") or ""
+        if not raw.strip():
+            return
+        # le card sono separate dai marker "# ── DOC N ──"; parse tollerante
+        from compliance.gap_analyzer import _parse_evidence_yaml
+        try:
+            cards = _parse_evidence_yaml(raw)
+        except Exception:
+            cards = []
+        for card in cards:
+            fname = str(card.get("file_name", "") or "")
+            if fname not in by_name:
+                continue
+            doc_id, _ver = by_name[fname]
+            dtype = str(card.get("doc_type", "") or "").strip()
+            expiry = card.get("expiry_date")
+            if dtype:
+                dms.backfill_doc_type(doc_id, dtype, expiry if expiry else None)
+        _audit(username, "analyze_dms", "analysis", result.analysis_id,
+               {"scope": body.scope, "documents": len(docs)})
+
+    return _pipeline_sse_response(
+        context=context, username=username,
+        documents_override=docs, on_success=_backfill,
+    )
+
+
+def _pipeline_sse_response(
+    context,
+    username: str,
+    zip_bytes: Optional[bytes] = None,
+    documents_override: Optional[List[Dict[str, Any]]] = None,
+    on_success=None,
+):
+    """Fase 6 — streamer SSE condiviso fra analyze (ZIP), re-analyse (corpus)
+    e analyze-dms (scope DMS).
+
+    Esegue la pipeline in un worker thread, inoltra i progress event sulla
+    queue asyncio, salva il risultato a fine run e chiude con done/error.
+    `on_success(result, outcome)` — callback opzionale dopo il salvataggio
+    (Fase D: backfill doc_type del DMS dalle evidence card). Non blocca mai.
+    """
+    from modules.db_manager import save_compliance_analysis
+
     loop = asyncio.get_event_loop()
     queue: asyncio.Queue = asyncio.Queue()
 
@@ -1155,18 +358,20 @@ async def compliance_analyze(
         asyncio.run_coroutine_threadsafe(queue.put({"pct": pct, "msg": msg}), loop)
 
     async def event_stream():
-        _emit(5, "Reading documents...")
+        _emit(5, "Reading documents..." if documents_override is None
+                 else "Loading stored corpus...")
 
         def _run():
             from compliance.pipeline import run_compliance_pipeline
             outcome = run_compliance_pipeline(
-                zip_bytes=file_bytes,
+                zip_bytes=zip_bytes,
                 company_context=context,
                 emitter=_emit,
+                documents_override=documents_override,
             )
             if not outcome.get("success"):
                 raise RuntimeError(outcome.get("error", "Pipeline failed"))
-            return outcome["result"]
+            return outcome
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             future = loop.run_in_executor(pool, _run)
@@ -1183,7 +388,8 @@ async def compliance_analyze(
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
             try:
-                result = future.result()
+                outcome = future.result()
+                result = outcome["result"]
                 result_dict = result.model_dump()
                 context_dict = context.model_dump()
 
@@ -1193,9 +399,16 @@ async def compliance_analyze(
                         user_id=username,
                         result_json_str=json.dumps(result_dict),
                         context_json_str=json.dumps(context_dict),
+                        evidence_yaml=outcome.get("evidence_yaml") or "",
                     )
                 except Exception as db_err:
                     logger.warning(f"[Compliance] DB save failed (non-blocking): {db_err}")
+
+                if on_success is not None:
+                    try:
+                        on_success(result, outcome)
+                    except Exception as cb_err:
+                        logger.warning(f"[Compliance] on_success callback failed (non-blocking): {cb_err}")
 
                 done_event = {"done": True, "analysis_id": result.analysis_id, "result": result_dict}
                 yield f"data: {json.dumps(done_event, ensure_ascii=False)}\n\n"
@@ -1208,6 +421,44 @@ async def compliance_analyze(
         event_stream(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.post("/api/compliance/analyses/{analysis_id}/reanalyse")
+async def compliance_reanalyse(
+    analysis_id: str,
+    user: Dict = Depends(_get_current_user),
+):
+    """Fase 6 — rilancia l'analisi sul corpus salvato (fondamento PRD §1.4.3).
+
+    Stessa base documentale, nuova run del motore → il Compare misura il
+    progresso reale del sistema (o l'effetto di un motore aggiornato) senza
+    ricaricare lo ZIP. Produce una NUOVA analysis_id; SSE come l'analyze.
+    """
+    from compliance.schemas import CompanyContext
+    from modules.db_manager import load_analysis_corpus
+
+    row = _require_analysis_access(analysis_id, user)
+
+    docs = load_analysis_corpus(analysis_id)
+    if not docs:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "No stored corpus for this analysis (it predates corpus "
+                "persistence). Upload the ZIP again to re-assess."
+            ),
+        )
+
+    try:
+        context = CompanyContext(**json.loads(row.get("company_context_json") or "{}"))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not restore company context: {e}")
+
+    return _pipeline_sse_response(
+        context=context,
+        username=user["username"],
+        documents_override=docs,
     )
 
 
@@ -1231,17 +482,42 @@ async def get_compliance_analysis_detail(
     analysis_id: str,
     user: Dict = Depends(_get_current_user),
 ):
-    """Dettaglio completo di un'analisi (include result_json)."""
-    from modules.db_manager import get_compliance_analysis
+    """Dettaglio completo di un'analisi (include result_json). Ownership-checked.
+
+    Fase 4 — merge del registro NC nello snapshot: status / dismissed /
+    dismiss_reason per clausola + lista delle NC manuali. Il result_json
+    persistito resta immutabile; l'overlay vive solo nella risposta.
+    """
     import json as _json
-    row = get_compliance_analysis(analysis_id)
-    if not row:
-        raise HTTPException(status_code=404, detail="Analysis not found")
+    from modules.db_manager import get_nonconformities
+
+    row = _require_analysis_access(analysis_id, user)
     if row.get("result_json"):
         try:
             row["result"] = _json.loads(row["result_json"])
         except Exception:
             row["result"] = None
+
+    try:
+        ncs = get_nonconformities(analysis_id)
+    except Exception as e:
+        logger.warning(f"[NC register] lettura fallita per {analysis_id}: {e}")
+        ncs = []
+
+    by_clause = {nc["clause_id"]: nc for nc in ncs if nc.get("clause_id")}
+    if row.get("result"):
+        for norm in row["result"].get("norms", []):
+            for clause in norm.get("clauses", []):
+                nc = by_clause.get(clause.get("clause_id"))
+                if nc:
+                    clause["status"] = nc.get("status", "open")
+                    clause["dismissed"] = bool(nc.get("dismissed"))
+                    clause["dismiss_reason"] = nc.get("dismiss_reason") or None
+                    clause["nc_id"] = nc.get("id")
+
+    row["manual_nonconformities"] = [
+        nc for nc in ncs if nc.get("source") == "manual"
+    ]
     return row
 
 
@@ -1250,18 +526,13 @@ async def download_compliance_report(
     analysis_id: str,
     user: Dict = Depends(_get_current_user),
 ):
-    """Genera e scarica il report DOCX per un'analisi compliance."""
+    """Genera e scarica il report DOCX per un'analisi compliance. Ownership-checked."""
     import json as _json
-    from modules.db_manager import get_compliance_analysis
     from compliance.report_builder import build_docx_report
-    from compliance.schemas import (
-        ComplianceAnalysisResult, CompanyContext, NormGapReport,
-        ClauseGap, TraceabilityLink, RemediationPlan,
-    )
+    from compliance.schemas import ComplianceAnalysisResult
+    from modules.db_manager import get_nonconformities
 
-    row = get_compliance_analysis(analysis_id)
-    if not row:
-        raise HTTPException(status_code=404, detail="Analysis not found")
+    row = _require_analysis_access(analysis_id, user)
 
     try:
         result_data = _json.loads(row["result_json"]) if isinstance(row.get("result_json"), str) else row.get("result_json", {})
@@ -1269,13 +540,20 @@ async def download_compliance_report(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Could not parse analysis result: {e}")
 
+    # Fase 4: il registro NC guida l'esclusione dei dismissed dalle sezioni
+    # operative + l'appendice Set-aside + le NC manuali.
     try:
-        docx_bytes = build_docx_report(result)
+        register = get_nonconformities(analysis_id)
+    except Exception:
+        register = []
+
+    try:
+        docx_bytes = build_docx_report(result, register=register)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Report generation failed: {e}")
 
     safe_company = result.company.replace(" ", "_").replace("/", "-")[:30]
-    filename = f"ComplianceOS_GAP_Report_{safe_company}_{analysis_id[:8]}.docx"
+    filename = f"Amisys QHSE_GAP_Report_{safe_company}_{analysis_id[:8]}.docx"
 
     return StreamingResponse(
         iter([docx_bytes]),
@@ -1288,10 +566,18 @@ async def download_compliance_report(
 # Sprint 3.3 — Post-audit chat grounded on the analysis evidences
 # ──────────────────────────────────────────────────────────────────────────────
 
+class ChatTurnIn(BaseModel):
+    role: str       # "user" | "assistant"
+    content: str
+
+
 class ChatRequest(BaseModel):
     analysis_id: Optional[str] = None  # Sprint G.4: opzionale → chat "general" senza grounding
     query: str
-    conversation_id: Optional[str] = None  # reserved for future multi-turn support
+    conversation_id: Optional[str] = None
+    # Fase 6 — multi-turn: gli ultimi turni della conversazione (max 6 usati).
+    # La history è CONTESTO conversazionale, mai fonte di evidenza.
+    messages: Optional[List[ChatTurnIn]] = None
 
 
 class ChatSource(BaseModel):
@@ -1308,47 +594,46 @@ class ChatResponse(BaseModel):
     sources: List[ChatSource]
 
 
+def _chat_history_block(messages) -> str:
+    """Fase 6 — multi-turn: rende gli ultimi 6 turni come blocco di contesto.
+
+    Regola comunicata anche al modello: la history serve a capire i pronomi e
+    i riferimenti ("e per la 14001?"), NON è una fonte di evidenza citabile.
+    """
+    if not messages:
+        return ""
+    turns = [m for m in messages if m.role in ("user", "assistant") and m.content.strip()][-6:]
+    if not turns:
+        return ""
+    lines = ["## Conversation so far (context only — never cite it as evidence)"]
+    for m in turns:
+        speaker = "Manager" if m.role == "user" else "Assistant"
+        lines.append(f"{speaker}: {m.content.strip()[:500]}")
+    return "\n".join(lines) + "\n\n## Current question\n"
+
+
 def _call_chat_llm(sys_prompt: str, user_prompt: str, max_tokens: int = 800) -> str:
-    """Helper condiviso: Azure primario + fallback Gemini per la chat."""
-    try:
-        from v2.azure_openai_client_v2 import AzureOpenAIClientV2
-        from v2.provider_profiles_v2 import PROFILES
-        profile = PROFILES.get("gpt-4.1-mini-azure")
-        if profile is None:
-            raise RuntimeError("gpt-4.1-mini-azure profile not configured")
-        client = AzureOpenAIClientV2(profile=profile)
-        stream = client.chat_stream(
-            messages=[
-                {"role": "system", "content": sys_prompt},
-                {"role": "user",   "content": user_prompt},
-            ],
-            max_tokens=max_tokens,
-        )
-        chunks: List[str] = []
-        for chunk in stream:
-            choices = getattr(chunk, "choices", None) or []
-            if choices:
-                delta = getattr(choices[0], "delta", None)
-                content = getattr(delta, "content", None) if delta else None
-                if content:
-                    chunks.append(content)
-        return "".join(chunks).strip()
-    except Exception as e:
-        logging.getLogger("compliance.chat").warning(
-            f"Azure chat failed, falling back to Gemini: {e}"
-        )
-        from v2.gemini_client_v2 import GeminiClientV2, analyze_batch_streaming
-        from v2.provider_profiles_v2 import PROFILES as _P
-        profile = _P.get("gemini-2.5-flash")
-        if profile is None:
-            raise RuntimeError("gemini-2.5-flash profile not configured")
-        gc = GeminiClientV2(profile=profile)
-        result_text = analyze_batch_streaming(
-            client=gc,
-            batch_docs=[{"filename": "chat_query", "content": user_prompt}],
-            universal_prompt=sys_prompt,
-        ).text
-        return (result_text or "").strip()
+    """Helper chat: Azure-only (fallback Gemini rimosso, decisione utente
+    2026-06-12). deep=True: la chat è user-facing e usa il profilo deep
+    quando configurato. Gli errori propagano al chiamante → 502."""
+    from v2.azure_openai_client_v2 import make_client
+    client = make_client(deep=True)
+    stream = client.chat_stream(
+        messages=[
+            {"role": "system", "content": sys_prompt},
+            {"role": "user",   "content": user_prompt},
+        ],
+        max_tokens=max_tokens,
+    )
+    chunks: List[str] = []
+    for chunk in stream:
+        choices = getattr(chunk, "choices", None) or []
+        if choices:
+            delta = getattr(choices[0], "delta", None)
+            content = getattr(delta, "content", None) if delta else None
+            if content:
+                chunks.append(content)
+    return "".join(chunks).strip()
 
 
 @app.post("/api/compliance/chat", response_model=ChatResponse)
@@ -1366,13 +651,13 @@ async def compliance_chat(
     - analysis_id None        → no DB lookup, no ChromaDB, prompt
       "chat_general" advisory su ISO 9001/14001/45001 generic. Sources = [].
 
-    Note: ComplianceOS does not persist the raw Phase 2 evidence YAML.
-    Quando in grounded mode, la chat ground sui sources già serializzati
-    nel result (ClauseGap.sources). Documenti non citati in alcun gap non
-    sono visibili alla chat — è il comportamento veritiero dato il
-    persistence model attuale.
+    Fase 6: il grounding usa l'evidence_yaml persistito (TUTTO il corpus) con
+    fallback alle citations per le analisi pre-R1; il prompt include il
+    catalogo corpus (smart searching, PRD §1.3.12) e la history multi-turn.
     """
     from pathlib import Path as _Path
+
+    history_block = _chat_history_block(req.messages)
 
     # ─── Branch general (no grounding) ──────────────────────────────────
     if req.analysis_id is None or req.analysis_id.strip() == "":
@@ -1381,61 +666,81 @@ async def compliance_chat(
             sys_prompt = chat_prompt_path.read_text(encoding="utf-8")
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"chat_general.md missing: {e}")
+        user_prompt = history_block + req.query.strip()
         try:
-            response_text = _call_chat_llm(sys_prompt, req.query.strip(), max_tokens=900)
+            # Sprint R1: off-thread — the LLM call is sync and would block the
+            # event loop (freezing concurrent SSE analysis streams).
+            response_text = await asyncio.to_thread(
+                _call_chat_llm, sys_prompt, user_prompt, 900,
+            )
         except Exception as e:
-            raise HTTPException(status_code=502, detail=f"Both LLM providers failed: {e}")
+            raise HTTPException(status_code=502, detail=f"LLM provider failed: {e}")
         if not response_text:
             response_text = "No response could be generated for this query."
         return ChatResponse(analysis_id=None, response=response_text, sources=[])
 
     # ─── Branch grounded (analysis_id presente) ─────────────────────────
     import json as _json
-    from modules.db_manager import get_compliance_analysis
     from compliance.schemas import ComplianceAnalysisResult
     from compliance.evidence_service import EvidenceService
     from compliance.context_intake import build_context_prompt_block
 
-    # 1) Load the persisted analysis
-    row = get_compliance_analysis(req.analysis_id)
-    if not row:
-        raise HTTPException(status_code=404, detail="Analysis not found")
+    # 1) Load the persisted analysis (Fase 3: ownership-checked)
+    row = _require_analysis_access(req.analysis_id, user)
     try:
         result_data = _json.loads(row["result_json"]) if isinstance(row.get("result_json"), str) else row.get("result_json", {})
         result = ComplianceAnalysisResult(**result_data)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Could not parse analysis result: {e}")
 
-    # 2) Reconstruct evidence cards from the citations in the result.
-    # Each ClauseGap.sources entry is already a TraceabilityLink — we convert
-    # these into card-shaped dicts the EvidenceService can index.
-    # Sprint H.2: defensively coerce every value to a serialisable primitive
-    # so ChromaDB's metadata validation (which rejects None and unexpected
-    # types) cannot crash the request.
-    seen_ids: set = set()
+    # 2) Build evidence cards for grounding.
+    # Sprint R1: prefer the persisted full Phase 2 evidence YAML — it covers
+    # ALL analysed documents, not only those cited in a gap. Older analyses
+    # (pre-R1) have no evidence_yaml; fall back to reconstructing cards from
+    # the citations in the result (legacy behaviour, truthful but narrower).
     cards: List[Dict[str, Any]] = []
-    for norm in result.norms:
-        for clause in norm.clauses:
-            for src in clause.sources:
-                eid = str(src.evidence_id or "")
-                if not eid or eid in seen_ids:
-                    continue
-                seen_ids.add(eid)
-                verbatim = str(src.excerpt or "")
-                # Prefer src.summary (Sprint H.1) for the descriptive blob the
-                # embedder will use as searchable text; fall back to verbatim.
-                descriptive = str(getattr(src, "summary", None) or verbatim)
-                cards.append({
-                    "evidence_id":        eid,
-                    "file_name":          str(src.file_name or ""),
-                    "doc_type":           "other",
-                    "iso_clause_primary": str(clause.clause_id or ""),
-                    "gap_signal":         bool(clause.severity in ("MAJOR", "MINOR")),
-                    "confidence":         0.5,
-                    "summary":            descriptive,
-                    "gap_detail":         "",
-                    "excerpts":           [{"text": verbatim, "pages": list(src.pages or [])}],
-                })
+    evidence_yaml = row.get("evidence_yaml") or ""
+    if evidence_yaml.strip():
+        try:
+            from compliance.gap_analyzer import _parse_evidence_yaml
+            cards = [
+                c for c in _parse_evidence_yaml(evidence_yaml)
+                if c.get("evidence_id")
+            ]
+        except Exception as e:
+            logging.getLogger("compliance.chat").warning(
+                "[Compliance chat] evidence_yaml parse failed for %s: %s — "
+                "falling back to citation reconstruction", req.analysis_id, e,
+            )
+            cards = []
+
+    if not cards:
+        # Legacy path: reconstruct from citations (TraceabilityLink) only.
+        # Sprint H.2: defensively coerce every value to a serialisable
+        # primitive so ChromaDB's metadata validation cannot crash the request.
+        seen_ids: set = set()
+        for norm in result.norms:
+            for clause in norm.clauses:
+                for src in clause.sources:
+                    eid = str(src.evidence_id or "")
+                    if not eid or eid in seen_ids:
+                        continue
+                    seen_ids.add(eid)
+                    verbatim = str(src.excerpt or "")
+                    # Prefer src.summary (Sprint H.1) for the descriptive blob
+                    # the embedder uses as searchable text.
+                    descriptive = str(getattr(src, "summary", None) or verbatim)
+                    cards.append({
+                        "evidence_id":        eid,
+                        "file_name":          str(src.file_name or ""),
+                        "doc_type":           "other",
+                        "iso_clause_primary": str(clause.clause_id or ""),
+                        "gap_signal":         bool(clause.severity in ("MAJOR", "MINOR")),
+                        "confidence":         0.5,
+                        "summary":            descriptive,
+                        "gap_detail":         "",
+                        "excerpts":           [{"text": verbatim, "pages": list(src.pages or [])}],
+                    })
 
     if not cards:
         # No citations available — reply truthfully without calling the LLM
@@ -1457,7 +762,11 @@ async def compliance_chat(
     import traceback as _tb
     _chat_log = logging.getLogger("compliance.chat")
     try:
-        service = EvidenceService.from_cards(analysis_id=req.analysis_id, cards=cards)
+        # Sprint R1: indexing is CPU/embedding-heavy and sync — run off-thread
+        # so concurrent SSE pipelines don't freeze while a chat indexes.
+        service = await asyncio.to_thread(
+            EvidenceService.from_cards, req.analysis_id, cards,
+        )
     except Exception as e:
         _chat_log.error(
             "[Compliance chat] EvidenceService.from_cards failed for analysis %s "
@@ -1471,7 +780,9 @@ async def compliance_chat(
 
     try:
         try:
-            retrieved = service.get_evidences_similar_to(req.query, n=6)
+            retrieved = await asyncio.to_thread(
+                service.get_evidences_similar_to, req.query, 6,
+            )
         except Exception as e:
             _chat_log.error(
                 "[Compliance chat] retrieval failed for analysis %s on query %r: %s\n%s",
@@ -1533,18 +844,36 @@ async def compliance_chat(
             evidence_lines.append(f"gap_signal: {ev.get('gap_signal', False)}")
             evidence_lines.append(f"excerpt: {str(ev.get('excerpt',''))[:500]}")
 
+        # Fase 6 — catalogo corpus (smart searching, PRD §1.3.12): UNA riga per
+        # OGNI documento analizzato (nome, tipo, sintesi). È ciò che rende
+        # rispondibile "find me all the risk assessments" per intero, non solo
+        # sui top-6 del retrieval. Cap difensivo a 150 documenti.
+        catalogue_lines: List[str] = [
+            "## Corpus catalogue (every analysed document — name | type | summary)"
+        ]
+        for card in cards[:150]:
+            fname = str(card.get("file_name", "") or "")
+            dtype = str(card.get("doc_type", "other") or "other")
+            summ = str(card.get("summary", "") or "").replace("\n", " ")[:140]
+            catalogue_lines.append(f"- {fname} | {dtype} | {summ}")
+
         user_prompt = (
             "## compliance_analysis_summary\n"
             + "\n".join(summary_lines)
             + "\n\n"
+            + "\n".join(catalogue_lines)
+            + "\n\n"
             + "\n".join(evidence_lines)
-            + "\n\n## User question\n"
+            + "\n\n"
+            + (history_block or "## User question\n")
             + req.query.strip()
         )
 
-        # 5) Call LLM via shared helper (Azure first, Gemini fallback)
+        # 5) Call LLM via shared helper (Azure-only)
         try:
-            response_text = _call_chat_llm(sys_prompt, user_prompt, max_tokens=800)
+            response_text = await asyncio.to_thread(
+                _call_chat_llm, sys_prompt, user_prompt, 800,
+            )
         except Exception as e:
             _chat_log.error(
                 "[Compliance chat] LLM call failed for analysis %s: %s\n%s",
@@ -1578,6 +907,133 @@ async def compliance_chat(
             pass
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Fase H — PQQ / SQ assistant (PRD §1.6.9)
+# ──────────────────────────────────────────────────────────────────────────────
+
+class PqqRequest(BaseModel):
+    analysis_id: str
+    questions: List[str]
+
+
+class PqqAnswer(BaseModel):
+    question: str
+    answer: str
+    status: str                 # 'answered' | 'needs_input'
+    sources: List[ChatSource]
+
+
+class PqqExportItem(BaseModel):
+    question: str
+    answer: str
+    status: str = "answered"
+
+
+class PqqExportRequest(BaseModel):
+    company: str = ""
+    items: List[PqqExportItem]
+
+
+def _build_grounding_cards(row: Dict, result) -> List[Dict[str, Any]]:
+    """Estrae le evidence card per il grounding dall'evidence_yaml persistito.
+    (PQQ richiede analisi recenti con evidence_yaml; niente fallback legacy.)"""
+    cards: List[Dict[str, Any]] = []
+    evidence_yaml = row.get("evidence_yaml") or ""
+    if evidence_yaml.strip():
+        try:
+            from compliance.gap_analyzer import _parse_evidence_yaml
+            cards = [c for c in _parse_evidence_yaml(evidence_yaml) if c.get("evidence_id")]
+        except Exception:
+            cards = []
+    return cards
+
+
+@app.post("/api/compliance/pqq")
+async def compliance_pqq(req: PqqRequest, user: Dict = Depends(_get_current_user)):
+    """Risponde a una lista di domande PQQ/SQ grounded sull'evidenza
+    dell'analisi indicata. Ogni risposta è una BOZZA con citazioni; dove
+    l'evidenza non copre, la risposta è 'needs_input' (mai inventare)."""
+    import json as _json
+    from compliance.schemas import ComplianceAnalysisResult
+    from compliance.evidence_service import EvidenceService
+    from pathlib import Path as _Path
+
+    if not req.questions:
+        raise HTTPException(status_code=422, detail="At least one question is required")
+
+    row = _require_analysis_access(req.analysis_id, user)
+    try:
+        result_data = _json.loads(row["result_json"]) if isinstance(row.get("result_json"), str) else row.get("result_json", {})
+        result = ComplianceAnalysisResult(**result_data)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not parse analysis result: {e}")
+
+    cards = _build_grounding_cards(row, result)
+    if not cards:
+        raise HTTPException(
+            status_code=409,
+            detail="This analysis has no indexed evidence to ground tender answers on.",
+        )
+
+    try:
+        sys_prompt = (_Path(__file__).parent / "prompts" / "compliance" / "pqq_answer.md").read_text(encoding="utf-8")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"pqq_answer.md missing: {e}")
+    from compliance.context_intake import build_context_prompt_block
+    sys_prompt = sys_prompt.replace("{company_context}", build_context_prompt_block(result.context))
+
+    service = await asyncio.to_thread(EvidenceService.from_cards, req.analysis_id, cards)
+    answers: List[PqqAnswer] = []
+    try:
+        for q in req.questions[:50]:
+            q = q.strip()
+            if not q:
+                continue
+            retrieved = await asyncio.to_thread(service.get_evidences_similar_to, q, 6)
+            ev_lines = ["## Retrieved evidence"]
+            for ev in retrieved:
+                ev_lines.append(f"- [{ev.get('file_name','')}] {str(ev.get('excerpt',''))[:400]}")
+            user_prompt = "\n".join(ev_lines) + f"\n\n## Tender question\n{q}"
+            try:
+                ans = await asyncio.to_thread(_call_chat_llm, sys_prompt, user_prompt, 600)
+            except Exception as e:
+                raise HTTPException(status_code=502, detail=f"LLM provider failed: {e}")
+            status = "needs_input" if ans.strip().upper().startswith("NEEDS INPUT") else "answered"
+            sources_out = [
+                ChatSource(
+                    evidence_id=str(ev.get("evidence_id", "")),
+                    file_name=str(ev.get("file_name", "")),
+                    excerpt=str(ev.get("excerpt", ""))[:300],
+                    iso_clause_primary=str(ev.get("iso_clause_primary", "")),
+                    relevance_score=float(1.0 - float(ev.get("distance", 0.5))),
+                )
+                for ev in retrieved[:3]
+            ]
+            answers.append(PqqAnswer(question=q, answer=ans or "No draft could be generated.",
+                                     status=status, sources=sources_out))
+    finally:
+        try:
+            service.close()
+        except Exception:
+            pass
+
+    _audit(user, "pqq_draft", "analysis", req.analysis_id, {"questions": len(answers)})
+    return {"analysis_id": req.analysis_id, "answers": [a.model_dump() for a in answers]}
+
+
+@app.post("/api/compliance/pqq/export")
+async def compliance_pqq_export(req: PqqExportRequest, user: Dict = Depends(_get_current_user)):
+    """Esporta le risposte PQQ come DOCX con disclaimer 'Draft for review'."""
+    from compliance.report_builder import build_pqq_docx
+    docx = build_pqq_docx(req.company, [i.model_dump() for i in req.items])
+    safe = "".join(c for c in (req.company or "tender") if c.isalnum() or c in " -_")[:40].strip() or "tender"
+    return StreamingResponse(
+        __import__("io").BytesIO(docx),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="PQQ_draft_{safe}.docx"'},
+    )
+
+
 @app.patch("/api/compliance/analyses/{analysis_id}/actions/{clause_id}")
 async def update_ncr_action(
     analysis_id: str,
@@ -1585,14 +1041,150 @@ async def update_ncr_action(
     body: Dict = Body(...),
     user: Dict = Depends(_get_current_user),
 ):
-    """Aggiorna status NCR: open / in_progress / closed."""
+    """Aggiorna status NCR: open / in_progress / closed. Ownership-checked."""
     from modules.db_manager import update_ncr_status
+    _require_analysis_access(analysis_id, user)
     status = body.get("status", "open")
     notes = body.get("notes", "")
     if status not in ("open", "in_progress", "closed"):
         raise HTTPException(status_code=422, detail="status must be open / in_progress / closed")
     update_ncr_status(analysis_id, clause_id, status, notes)
+    _audit(user, "nc_status_update", "clause", f"{analysis_id}/{clause_id}", {"status": status})
     return {"ok": True}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Fase 5 — Delta / Compare (PRODUCT.md aha moment #3, PRD §2.7 uso ricorrente)
+# ──────────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/compliance/analyses/{analysis_id}/delta")
+async def get_analysis_delta(
+    analysis_id: str,
+    against: str = Query(..., description="analysis_id della run precedente"),
+    user: Dict = Depends(_get_current_user),
+):
+    """Confronto fra due analisi (nuova = path param, vecchia = ?against=).
+
+    Ownership-checked su ENTRAMBE le analisi. Ritorna per-clausola:
+    improved / regressed / unchanged / new / removed, overall per norma,
+    delta del documented-info coverage e contatori di sintesi.
+    """
+    from compliance.delta_engine import compare_analyses
+
+    _require_analysis_access(analysis_id, user)
+    _require_analysis_access(against, user)
+
+    delta = compare_analyses(analysis_id, against)
+    if "error" in delta:
+        raise HTTPException(status_code=404, detail=delta["error"])
+    return delta
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Fase 4 — Registro nonconformità (PRD §1.4.8): NC manuali + dismiss/restore
+# ──────────────────────────────────────────────────────────────────────────────
+
+class ManualNCRequest(BaseModel):
+    title: str
+    description: str = ""
+    severity: str = "MINOR"   # MAJOR | MINOR | OBSERVATION
+
+
+class DismissRequest(BaseModel):
+    reason: str               # obbligatoria: mai cancellazioni silenziose
+
+
+@app.post("/api/compliance/analyses/{analysis_id}/nonconformities")
+async def add_manual_nc(
+    analysis_id: str,
+    body: ManualNCRequest,
+    user: Dict = Depends(_get_current_user),
+):
+    """NC inserita a mano dal manager (PRD §1.4.8). Ownership-checked."""
+    from modules.db_manager import add_manual_nonconformity
+    _require_analysis_access(analysis_id, user)
+    if not body.title.strip():
+        raise HTTPException(status_code=422, detail="title is required")
+    if body.severity not in ("MAJOR", "MINOR", "OBSERVATION"):
+        raise HTTPException(status_code=422, detail="severity must be MAJOR / MINOR / OBSERVATION")
+    nc_id = add_manual_nonconformity(
+        analysis_id=analysis_id,
+        title=body.title.strip(),
+        description=body.description.strip(),
+        severity=body.severity,
+        created_by=user.get("username", ""),
+    )
+    _audit(user, "nc_manual_add", "nonconformity", f"{analysis_id}/{nc_id}",
+           {"title": body.title.strip(), "severity": body.severity})
+    return {"ok": True, "nc_id": nc_id}
+
+
+@app.post("/api/compliance/analyses/{analysis_id}/nonconformities/{nc_id}/dismiss")
+async def dismiss_nc(
+    analysis_id: str,
+    nc_id: int,
+    body: DismissRequest,
+    user: Dict = Depends(_get_current_user),
+):
+    """Mette da parte una NC con motivazione obbligatoria (PRD: 'bin findings').
+
+    Il record non viene mai cancellato: resta nel registro con reason e autore,
+    e nel report DOCX finisce nell'appendice 'Set-aside findings'.
+    """
+    from modules.db_manager import set_nonconformity_dismissed
+    _require_analysis_access(analysis_id, user)
+    if not body.reason.strip():
+        raise HTTPException(status_code=422, detail="a dismiss reason is required")
+    ok = set_nonconformity_dismissed(
+        nc_id, analysis_id, dismissed=True,
+        reason=body.reason.strip(), by=user.get("username", ""),
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="Nonconformity not found in this analysis")
+    _audit(user, "nc_dismiss", "nonconformity", f"{analysis_id}/{nc_id}",
+           {"reason": body.reason.strip()})
+    return {"ok": True}
+
+
+@app.post("/api/compliance/analyses/{analysis_id}/nonconformities/{nc_id}/restore")
+async def restore_nc(
+    analysis_id: str,
+    nc_id: int,
+    user: Dict = Depends(_get_current_user),
+):
+    """Ripristina una NC precedentemente messa da parte."""
+    from modules.db_manager import set_nonconformity_dismissed
+    _require_analysis_access(analysis_id, user)
+    ok = set_nonconformity_dismissed(nc_id, analysis_id, dismissed=False)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Nonconformity not found in this analysis")
+    _audit(user, "nc_restore", "nonconformity", f"{analysis_id}/{nc_id}")
+    return {"ok": True}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Fase B — Audit trail (PRD §4.3.10): sola lettura, admin-only
+# ──────────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/audit-log")
+async def read_audit_log(
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    entity_type: Optional[str] = Query(None),
+    action: Optional[str] = Query(None),
+    target_user: Optional[str] = Query(None, description="filtra per username attore"),
+    user: Dict = Depends(_get_current_user),
+):
+    """Registro append-only delle azioni mutanti. Solo admin (privacy: traccia
+    chi ha fatto cosa). Non filtrabile per ownership: è uno strumento di
+    governance, non di self-service."""
+    if str(user.get("role") or "").lower() != "admin":
+        raise HTTPException(status_code=403, detail="Audit log is restricted to administrators")
+    from modules.audit_log import get_audit_log, count_audit_log
+    rows = get_audit_log(limit=limit, offset=offset, username=target_user,
+                         entity_type=entity_type, action=action)
+    total = count_audit_log(username=target_user, entity_type=entity_type, action=action)
+    return {"entries": rows, "total": total, "limit": limit, "offset": offset}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1602,8 +1194,9 @@ async def update_ncr_action(
 if __name__ == "__main__":
     import uvicorn
     print("=" * 60)
-    print("  ComplianceOS API SERVER")
-    print(f"  Gemini API Key: {'OK' if GEMINI_API_KEY else 'MISSING'}")
+    print("  Amisys QHSE API SERVER")
+    print(f"  Azure OpenAI: {'OK' if os.environ.get('AZURE_OPENAI_API_KEY', '').strip() else 'MISSING'}")
+    print(f"  Azure DI OCR: {'OK' if os.environ.get('AZURE_DI_KEY', '').strip() else 'MISSING'}")
     print("=" * 60)
     uvicorn.run(
         "api_server:app",
@@ -1612,4 +1205,3 @@ if __name__ == "__main__":
         reload=True,
         log_level="info",
     )
-# touch Thu May 14 01:48:21     2026

@@ -1,4 +1,4 @@
-"""Shared text utilities for ComplianceOS pipeline.
+"""Shared text utilities for Amisys QHSE pipeline.
 
 Sprint H.1: introduces word-boundary aware truncation so that excerpts shown
 to the user never end mid-word (e.g. "procurement and maintenance activ").

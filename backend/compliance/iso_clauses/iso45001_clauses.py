@@ -139,6 +139,45 @@ ISO45001_CLAUSES: Dict[str, Dict[str, Any]] = {
             "top management", "leadership", "commitment", "OH&S policy",
             "resources", "management review", "accountability", "accountability",
         ],
+        # Sprint R8 — atomic_requirements (ISO 45001 §5.1). Documentation-
+        # verifiable items; 45001 leadership carries OH&S-specific duties.
+        "atomic_requirements": [
+            {
+                "id": "45001_5_1.policy_objectives.established",
+                "text": "Top management has established the OH&S policy and objectives, coherent with the organisation's hazards, risks and strategic direction.",
+                "verification_hint": "Signed policy; OH&S objectives traceable to the risk assessment and strategy.",
+                "expected_evidence": ["policy", "objective_plan"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "45001_5_1.accountability.documented",
+                "text": "Top management takes overall responsibility and accountability for the prevention of work-related injury and ill health (documented accountability, e.g. organigramma, deleghe, policy signature).",
+                "verification_hint": "Signed policy/appointments showing employer-level accountability (in Italy: datore di lavoro, deleghe ex D.Lgs 81/08).",
+                "expected_evidence": ["policy", "record", "certificate"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "45001_5_1.resources.allocated",
+                "text": "Evidence exists that top management provides the resources needed for the OH&S management system.",
+                "verification_hint": "Resource decisions in MR outputs, PPE/equipment investments, RSPP appointment and budget.",
+                "expected_evidence": ["management_review", "record", "certificate"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "45001_5_1.review.led",
+                "text": "Top management leads the management review and oversees OH&S performance (participation documented).",
+                "verification_hint": "MR minutes list top management; incident/performance data reviewed at that level.",
+                "expected_evidence": ["management_review"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "45001_5_1.consultation.promoted",
+                "text": "Top management demonstrably promotes worker consultation and participation (committees established, time/resources provided).",
+                "verification_hint": "Safety committee constitution, riunione periodica records, RLS appointment.",
+                "expected_evidence": ["communication_record", "record"],
+                "risk_if_missing": "MINOR",
+            },
+        ],
         "remediation_template": {
             "what": "Establish documented evidence of top management OH&S commitment: signed OH&S policy, resource allocation records, and management review minutes with top management participation.",
             "who": "Managing Director / HSE Manager",
@@ -162,6 +201,60 @@ ISO45001_CLAUSES: Dict[str, Dict[str, Any]] = {
         "evidence_keywords": [
             "OH&S policy", "health and safety policy", "policy statement",
             "injury prevention", "commitment", "communicated", "workers",
+        ],
+        # Sprint R3 — atomic_requirements from ISO 45001:2018 §5.2 (the policy
+        # commitments are prescribed verbatim by the standard) + audit
+        # checklist guidance. Wording checks — promise P4. 45001 prescribes
+        # MORE commitments than 9001/14001: safe and healthy working
+        # conditions, hazard elimination, worker consultation.
+        "atomic_requirements": [
+            {
+                "id": "45001_5_2.policy.documented",
+                "text": "An OH&S policy exists as documented information, identifiable as the current approved version (signed/dated by top management).",
+                "verification_hint": "Policy document or OH&S manual section; approval signature or issue date.",
+                "expected_evidence": ["policy", "quality_manual"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "45001_5_2.commitment.safe_conditions",
+                "text": "The policy wording contains an explicit commitment to provide safe and healthy working conditions for the prevention of work-related injury and ill health, appropriate to the organisation's specific hazards.",
+                "verification_hint": "Look for the commitment in the text; it must reference prevention of injury AND ill health, not a generic 'safety matters to us'.",
+                "expected_evidence": ["policy"],
+                "risk_if_missing": "MAJOR",
+                # Sprint R7 — deterministic wording check (EN+IT variants)
+                "wording_keywords": [["safe", "sicur", "salubr"], ["injur", "ill health", "infortun", "malatt", "health"]],
+            },
+            {
+                "id": "45001_5_2.commitment.eliminate_hazards",
+                "text": "The policy wording contains an explicit commitment to eliminate hazards and reduce OH&S risks.",
+                "verification_hint": "Wording equivalent to 'eliminate hazards and reduce OH&S risks' present in the policy text.",
+                "expected_evidence": ["policy"],
+                "risk_if_missing": "MAJOR",
+                "wording_keywords": [["hazard", "pericol", "risk", "risch"], ["elimin", "reduc", "ridu"]],
+            },
+            {
+                "id": "45001_5_2.commitment.consultation",
+                "text": "The policy wording contains an explicit commitment to consultation and participation of workers and, where they exist, workers' representatives.",
+                "verification_hint": "Consultation/participation commitment stated in the text (45001-specific — frequently missing from generic HSE policies).",
+                "expected_evidence": ["policy"],
+                "risk_if_missing": "MAJOR",
+                "wording_keywords": [["consult", "particip", "partecipa"]],
+            },
+            {
+                "id": "45001_5_2.commitment.legal_improvement",
+                "text": "The policy wording contains explicit commitments to fulfil legal and other requirements AND to continual improvement of the OH&S management system.",
+                "verification_hint": "Both commitments must appear in the text; mark PARTIAL when only one of the two is present and name the missing one.",
+                "expected_evidence": ["policy"],
+                "risk_if_missing": "MAJOR",
+                "wording_keywords": [["legal", "requirement", "normativ", "cogent", "requisit"], ["improv", "migliora", "enhanc", "perfezion", "ottimizz"]],
+            },
+            {
+                "id": "45001_5_2.communicated",
+                "text": "The policy is communicated within the organisation, available to workers and their representatives, and to interested parties.",
+                "verification_hint": "Distribution evidence, noticeboards, induction/training records referencing the policy.",
+                "expected_evidence": ["communication_record", "policy", "training_record"],
+                "risk_if_missing": "MINOR",
+            },
         ],
         "remediation_template": {
             "what": "Issue a signed, dated OH&S policy including commitments to prevention of injury and ill health, compliance with legal requirements, and worker consultation. Communicate to all staff.",
@@ -213,6 +306,38 @@ ISO45001_CLAUSES: Dict[str, Dict[str, Any]] = {
             "RLS", "safety committee", "toolbox talk", "worker feedback",
             "hazard reporting", "near miss reporting mechanism",
         ],
+        # Sprint R8 — atomic_requirements (ISO 45001 §5.4 — high-frequency NC
+        # cluster in real audits; the consultation chain node).
+        "atomic_requirements": [
+            {
+                "id": "45001_5_4.mechanisms.established",
+                "text": "Formal mechanisms for worker consultation and participation exist (safety committee, periodic meetings, worker representative).",
+                "verification_hint": "Committee constitution, riunione periodica minutes (D.Lgs 81/08 art. 35), RLS appointment.",
+                "expected_evidence": ["communication_record", "record", "certificate"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "45001_5_4.consultation.risk_assessment",
+                "text": "Workers (or their representatives) are consulted on hazard identification and risk assessment — with evidence, not just declared.",
+                "verification_hint": "RLS signature/participation on the DVR or risk assessment records; consultation minutes referencing the assessment.",
+                "expected_evidence": ["risk_assessment", "communication_record"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "45001_5_4.reporting.channel",
+                "text": "Workers have a working channel to report hazards, near misses and OH&S concerns.",
+                "verification_hint": "Near-miss/hazard report forms with actual entries, reporting procedure, suggestion records.",
+                "expected_evidence": ["nonconformity_record", "record", "procedure"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "45001_5_4.participation.incidents",
+                "text": "Workers participate in incident investigation and in the development of policy and objectives.",
+                "verification_hint": "Investigation records listing worker/RLS involvement; consultation evidence on policy/objectives.",
+                "expected_evidence": ["nonconformity_record", "communication_record"],
+                "risk_if_missing": "MINOR",
+            },
+        ],
         "remediation_template": {
             "what": "Establish formal worker consultation mechanisms: safety committee meetings, hazard/near miss reporting system, and worker involvement in risk assessment reviews. Record evidence of participation.",
             "who": "HSE Manager / HR Manager",
@@ -238,6 +363,38 @@ ISO45001_CLAUSES: Dict[str, Dict[str, Any]] = {
         "evidence_keywords": [
             "OH&S risk", "opportunity", "risk register", "risk assessment",
             "mitigation", "preventive action", "risk-based thinking",
+        ],
+        # Sprint R3 — atomic_requirements (ISO 45001 §6.1.1 + checklist
+        # guidance). Chain node for risk → operational control → monitoring.
+        "atomic_requirements": [
+            {
+                "id": "45001_6_1_1.planning.process",
+                "text": "The planning process determines risks and opportunities from the context (4.1), worker and interested-party needs (4.2), the hazards identified (6.1.2) and the applicable legal requirements.",
+                "verification_hint": "Planning records linking risks/opportunities to hazard assessment outcomes and legal requirements.",
+                "expected_evidence": ["risk_assessment", "record"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "45001_6_1_1.documented",
+                "text": "Documented information on the risks and opportunities and on the planning processes is maintained.",
+                "verification_hint": "Maintained register or planning document with revision control.",
+                "expected_evidence": ["risk_assessment", "record"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "45001_6_1_1.worker_input",
+                "text": "Workers (and their representatives) are consulted in the risk/opportunity planning process.",
+                "verification_hint": "Consultation records, RLS signature on the risk documents, safety committee minutes feeding the planning.",
+                "expected_evidence": ["communication_record", "risk_assessment", "record"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "45001_6_1_1.emergency.input",
+                "text": "Potential emergency situations are identified among the planning inputs (link to emergency preparedness, 8.2).",
+                "verification_hint": "Emergency scenarios referenced in the planning/risk documents, coherent with the emergency plan.",
+                "expected_evidence": ["risk_assessment", "emergency_plan"],
+                "risk_if_missing": "MINOR",
+            },
         ],
         "remediation_template": {
             "what": "Establish an OH&S risk and opportunity register linked to hazard assessment outcomes. Define mitigation actions and assign owners.",
@@ -393,6 +550,46 @@ ISO45001_CLAUSES: Dict[str, Dict[str, Any]] = {
             "OH&S objectives", "safety targets", "KPI", "action plan",
             "measurable", "accident rate", "near miss rate", "improvement targets",
         ],
+        # Sprint R3 — atomic_requirements (ISO 45001 §6.2 + checklist
+        # guidance). Promise P5 — label-agnostic: objectives may appear as
+        # safety targets, KPIs, improvement programmes.
+        "atomic_requirements": [
+            {
+                "id": "45001_6_2.objectives.documented",
+                "text": "OH&S objectives exist as documented information at relevant functions — regardless of the label used (objectives, safety targets, KPIs, improvement programmes).",
+                "verification_hint": "Objective plan, safety programme, KPI sheet or objectives embedded in the OH&S manual / management review.",
+                "expected_evidence": ["objective_plan", "record", "management_review"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "45001_6_2.objectives.measurable",
+                "text": "Objectives are measurable (where practicable): each carries a metric AND a target value (e.g. accident frequency rate, near-miss reporting count), not only a declared intention.",
+                "verification_hint": "Per-entry check: number/threshold + indicator. Name the entries that are declared-only.",
+                "expected_evidence": ["objective_plan", "record"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "45001_6_2.plan.defined",
+                "text": "Planning to achieve each objective defines: actions, resources, responsibilities, deadlines and how the results will be evaluated.",
+                "verification_hint": "Action plan columns: what, who, resources, by when, evaluation indicator.",
+                "expected_evidence": ["objective_plan", "record"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "45001_6_2.coherence",
+                "text": "Objectives are consistent with the OH&S policy and take account of the risk assessment results (6.1.2), the legal requirements and the outcomes of worker consultation.",
+                "verification_hint": "Cross-check objective themes against policy commitments, significant hazards and consultation outcomes.",
+                "expected_evidence": ["objective_plan", "policy", "risk_assessment"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "45001_6_2.monitored",
+                "text": "The implementation status of the objectives is monitored, communicated and updated.",
+                "verification_hint": "Progress records, actual-vs-target tracking, objectives as a management review input.",
+                "expected_evidence": ["record", "management_review", "objective_plan"],
+                "risk_if_missing": "MINOR",
+            },
+        ],
         "remediation_template": {
             "what": "Define measurable OH&S objectives linked to significant hazards and legal requirements. Document an action plan with owners, timescales, and measurement criteria.",
             "who": "HSE Manager",
@@ -444,6 +641,38 @@ ISO45001_CLAUSES: Dict[str, Dict[str, Any]] = {
         "evidence_keywords": [
             "safety awareness", "induction", "toolbox talk", "safety briefing",
             "hazard awareness", "risk communication", "OH&S policy awareness",
+        ],
+        # Sprint R8 — atomic_requirements (ISO 45001 §7.3). Includes the
+        # 45001-specific right to remove oneself from imminent danger.
+        "atomic_requirements": [
+            {
+                "id": "45001_7_3.policy_hazards.awareness",
+                "text": "Evidence exists that workers are made aware of the OH&S policy, the hazards and risks relevant to THEM, and the controls in place.",
+                "verification_hint": "Induction records, toolbox talks, informazione/formazione ex D.Lgs 81/08 covering job-specific hazards.",
+                "expected_evidence": ["training_record", "communication_record"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "45001_7_3.incidents.communicated",
+                "text": "Incident outcomes relevant to workers are communicated (lessons learned, safety alerts).",
+                "verification_hint": "Safety alerts, briefing records following incidents/near misses.",
+                "expected_evidence": ["communication_record", "nonconformity_record"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "45001_7_3.removal_right.communicated",
+                "text": "Workers are informed of their ability to remove themselves from situations of serious and imminent danger, without reprisal (45001-specific requirement).",
+                "verification_hint": "Induction/policy content stating the right to remove oneself from imminent danger (art. 44 D.Lgs 81/08 in Italy).",
+                "expected_evidence": ["training_record", "policy", "communication_record"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "45001_7_3.contractors.included",
+                "text": "Awareness extends to contractors and visitors where they are exposed to the organisation's hazards.",
+                "verification_hint": "Contractor site inductions, visitor briefings, DUVRI-related communications.",
+                "expected_evidence": ["communication_record", "supplier_document"],
+                "risk_if_missing": "MINOR",
+            },
         ],
         "remediation_template": {
             "what": "Implement an OH&S awareness programme including induction for new workers, regular toolbox talks, and contractor site briefings. Record evidence of communication.",
@@ -715,6 +944,46 @@ ISO45001_CLAUSES: Dict[str, Dict[str, Any]] = {
         "evidence_keywords": [
             "management review", "review minutes", "top management",
             "OH&S performance", "review agenda", "review output",
+        ],
+        # Sprint R3 — atomic_requirements (ISO 45001:2018 §9.3 input/output
+        # list). Promise P3: map MR minutes against required agenda items and
+        # name the missing ones. 45001 adds worker-specific inputs/outputs.
+        "atomic_requirements": [
+            {
+                "id": "45001_9_3.held.recorded",
+                "text": "Management review is performed at planned intervals and documented (minutes or report with date and attendees including top management).",
+                "verification_hint": "MR minutes/report; date, participants, periodicity consistent with OH&S planning.",
+                "expected_evidence": ["management_review"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "45001_9_3.inputs.complete",
+                "text": "The review covers the required inputs: status of previous actions; changes in internal/external issues incl. legal requirements and risks/opportunities; OH&S performance (incidents, nonconformities and corrective actions, monitoring results, audit results, worker consultation/participation outcomes, hazards and risks status); objectives achievement; adequacy of resources; relevant communications with interested parties; opportunities for continual improvement.",
+                "verification_hint": "Map the minutes against the input list item by item. Name the items NOT discussed — that list is the finding.",
+                "expected_evidence": ["management_review"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "45001_9_3.worker.input",
+                "text": "Worker consultation and participation outcomes appear among the discussed inputs (45001-specific requirement).",
+                "verification_hint": "Mention of safety committee outcomes, RLS feedback, worker-raised concerns in the minutes.",
+                "expected_evidence": ["management_review", "communication_record"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "45001_9_3.outputs.decisions",
+                "text": "Outputs include conclusions on the continuing suitability, adequacy and effectiveness of the OH&S MS, decisions on improvement opportunities, system changes, resources and actions needed, plus implications for the strategic direction.",
+                "verification_hint": "Decision/action section with responsibilities and timescales assigned.",
+                "expected_evidence": ["management_review"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "45001_9_3.outputs.communicated",
+                "text": "Relevant management review outputs are communicated to workers and, where they exist, workers' representatives (45001-specific requirement).",
+                "verification_hint": "Communication evidence: distribution of decisions, noticeboard, safety meeting where outcomes were shared.",
+                "expected_evidence": ["communication_record", "management_review"],
+                "risk_if_missing": "MINOR",
+            },
         ],
         "remediation_template": {
             "what": "Conduct and document formal management review including all required ISO 45001 §9.3 inputs including incident data, legal compliance, and KPI performance.",

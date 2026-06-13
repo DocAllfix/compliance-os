@@ -1,10 +1,9 @@
-"""
-Modulo Auth Manager per AUDIT-OS
+﻿"""
+Modulo Auth Manager per Amisys QHSE
 Gestisce autenticazione multi-utente con ruoli admin/auditor
 Sicurezza: bcrypt per hashing password (resistente a rainbow tables)
 """
 
-import streamlit as st
 import hashlib
 import json
 import os
@@ -72,58 +71,40 @@ def save_users(users: Dict):
 
 
 def create_default_users():
-    """Crea utenti default (admin + 5 auditor)."""
+    """Bootstrap del primo utente admin (eseguito SOLO se users.json non esiste).
+
+    Fase 3 consolidamento: rimosse le 6 password hardcoded nel sorgente.
+    La password admin iniziale viene da COMPLIANCE_ADMIN_PASSWORD (env);
+    in assenza, ne viene generata una casuale e STAMPATA UNA SOLA VOLTA
+    all'avvio — va cambiata o annotata subito. Gli utenti aggiuntivi si
+    creano cambiando users.json o via strumenti admin.
+    """
+    import secrets
+
+    admin_password = os.environ.get("COMPLIANCE_ADMIN_PASSWORD", "").strip()
+    generated = False
+    if not admin_password:
+        admin_password = secrets.token_urlsafe(9)
+        generated = True
+
     users = {
         "admin": {
-            "name": "Amministratore",
-            "password": hash_password("admin2026"),  # Cambiare in produzione!
+            "name": "Administrator",
+            "password": hash_password(admin_password),
             "role": "admin",
             "created_at": datetime.now().isoformat(),
             "last_login": None,
-            "active": True
+            "active": True,
         },
-        "boss": {
-            "name": "Boss",
-            "password": hash_password("boss2026"),
-            "role": "auditor",
-            "created_at": datetime.now().isoformat(),
-            "last_login": None,
-            "active": True
-        },
-        "valerio": {
-            "name": "Valerio",
-            "password": hash_password("valerio2026"),
-            "role": "auditor",
-            "created_at": datetime.now().isoformat(),
-            "last_login": None,
-            "active": True
-        },
-        "egisto": {
-            "name": "Egisto",
-            "password": hash_password("egisto2026"),
-            "role": "auditor",
-            "created_at": datetime.now().isoformat(),
-            "last_login": None,
-            "active": True
-        },
-        "fabiana": {
-            "name": "Fabiana",
-            "password": hash_password("fabiana2026"),
-            "role": "auditor",
-            "created_at": datetime.now().isoformat(),
-            "last_login": None,
-            "active": True
-        },
-        "alessia": {
-            "name": "Alessia",
-            "password": hash_password("alessia2026"),
-            "role": "auditor",
-            "created_at": datetime.now().isoformat(),
-            "last_login": None,
-            "active": True
-        }
     }
     save_users(users)
+
+    if generated:
+        print("=" * 62)
+        print("  Amisys QHSE — primo avvio: creato l'utente 'admin'.")
+        print(f"  Password generata (NON verrà più mostrata): {admin_password}")
+        print("  Impostare COMPLIANCE_ADMIN_PASSWORD in .env per controllarla.")
+        print("=" * 62)
     return users
 
 
@@ -163,30 +144,10 @@ def authenticate(username: str, password: str) -> Tuple[bool, Optional[str]]:
     return True, None
 
 
-def get_current_user() -> Optional[Dict]:
-    """Ritorna l'utente corrente dalla sessione."""
-    if "user" in st.session_state and st.session_state.user:
-        return st.session_state.user
-    return None
-
-
-def is_logged_in() -> bool:
-    """Verifica se l'utente è loggato."""
-    return get_current_user() is not None
-
-
-def is_admin() -> bool:
-    """Verifica se l'utente corrente è admin."""
-    user = get_current_user()
-    return user is not None and user.get("role") == "admin"
-
-
-def get_user_display_name() -> str:
-    """Ritorna il nome visualizzato dell'utente."""
-    user = get_current_user()
-    if user:
-        return user.get("name", user.get("username", "Utente"))
-    return "Ospite"
+# Fase 1 consolidamento: rimosso il blocco sessione Streamlit (get_current_user,
+# is_logged_in, is_admin, get_user_display_name) — era l'UI dell'app legacy
+# AUDITORSEMI. L'identità utente nell'API REST viene dal Bearer token
+# (api_server._get_current_user), non da st.session_state.
 
 
 # ==============================================================================
@@ -276,114 +237,24 @@ def invalidate_session_token(token: str):
         save_sessions(sessions)
 
 
-def restore_session_from_token():
-    """
-    Tenta di ripristinare la sessione utente dai query params.
-    Chiamare all'avvio dell'app prima di mostrare la login page.
-    """
-    # Se già loggato, non fare nulla
-    if "user" in st.session_state and st.session_state.user:
-        return True
-    
-    # Leggi token dai query params
-    try:
-        query_params = st.query_params
-        token = query_params.get("session", None)
-    except Exception as e:
-        print(f"[SESSION] Errore lettura query params: {e}")
-        return False
-    
-    if not token:
-        return False
-    
-    # Valida token
-    username = validate_session_token(token)
-    if not username:
-        # Token invalido o scaduto, rimuovi dal URL
-        try:
-            if "session" in st.query_params:
-                del st.query_params["session"]
-        except:
-            pass
-        return False
-    
-    # Ripristina sessione
-    users = load_users()
-    if username in users:
-        user_data = users[username]
-        st.session_state.user = {
-            "username": username,
-            "name": user_data["name"],
-            "role": user_data["role"]
-        }
-        st.session_state.authenticated = True
-        st.session_state.session_token = token
-        print(f"[SESSION] Sessione ripristinata per {username}")
-        return True
-    
-    return False
-
-
-def logout():
-    """Esegue il logout e invalida la sessione persistente."""
-    # Invalida token se presente
-    if "session_token" in st.session_state:
-        invalidate_session_token(st.session_state.session_token)
-        del st.session_state.session_token
-    
-    # Rimuovi token da URL
-    if "session" in st.query_params:
-        del st.query_params["session"]
-    
-    if "user" in st.session_state:
-        del st.session_state.user
-    if "authenticated" in st.session_state:
-        del st.session_state.authenticated
-
-
-def login(username: str, password: str) -> Tuple[bool, str]:
-    """
-    Esegue il login e salva l'utente in sessione.
-    Crea anche una sessione persistente per sopravvivere ai refresh.
-    
-    Returns:
-        (success, message)
-    """
-    success, error = authenticate(username, password)
-    
-    if success:
-        users = load_users()
-        username_lower = username.lower().strip()
-        user_data = users[username_lower]
-        
-        st.session_state.user = {
-            "username": username_lower,
-            "name": user_data["name"],
-            "role": user_data["role"]
-        }
-        st.session_state.authenticated = True
-        
-        # NUOVO: Crea sessione persistente
-        token = create_persistent_session(username_lower)
-        st.session_state.session_token = token
-        
-        # Salva token nei query params per persistenza al refresh
-        st.query_params["session"] = token
-        
-        return True, f"Benvenuto, {user_data['name']}!"
-    else:
-        return False, error
+# Fase 1 consolidamento: rimosse restore_session_from_token / logout / login —
+# funzioni di sessione Streamlit dell'app legacy. Il flusso REST equivalente è
+# authenticate + create_persistent_session (login) e invalidate_session_token
+# (logout), già usati da api_server.
 
 
 def change_password(username: str, old_password: str, new_password: str) -> Tuple[bool, str]:
     """Cambia la password di un utente."""
     users = load_users()
     username_lower = username.lower().strip()
-    
+
     if username_lower not in users:
         return False, "Utente non trovato"
-    
-    if users[username_lower]["password"] != hash_password(old_password):
+
+    # Fase 1 consolidamento: hash_password() genera un salt bcrypt nuovo a ogni
+    # chiamata, quindi il confronto diretto fra hash falliva SEMPRE. La verifica
+    # corretta passa da verify_password (gestisce anche gli hash legacy SHA-256).
+    if not verify_password(old_password, users[username_lower]["password"]):
         return False, "Password attuale errata"
     
     if len(new_password) < 6:
@@ -395,11 +266,16 @@ def change_password(username: str, old_password: str, new_password: str) -> Tupl
     return True, "Password cambiata con successo"
 
 
-def admin_reset_password(username: str, new_password: str) -> Tuple[bool, str]:
-    """Admin resetta la password di un utente."""
-    if not is_admin():
+def admin_reset_password(username: str, new_password: str,
+                          caller_role: str = "") -> Tuple[bool, str]:
+    """Admin resetta la password di un utente.
+
+    Fase 1 consolidamento: il check ruolo ora arriva dal chiamante (l'identità
+    nell'API REST viene dal Bearer token), non più da st.session_state.
+    """
+    if caller_role != "admin":
         return False, "Solo l'admin può resettare le password"
-    
+
     users = load_users()
     username_lower = username.lower().strip()
     
@@ -420,81 +296,9 @@ def get_all_users() -> Dict:
     return load_users()
 
 
-def render_login_page():
-    """
-    Renderizza la pagina di login.
-    Ritorna True se l'utente è autenticato.
-    """
-    # Se già loggato, mostra info utente
-    if is_logged_in():
-        return True
-    
-    # Styling login
-    st.markdown("""
-    <style>
-    .login-container {
-        max-width: 400px;
-        margin: 0 auto;
-        padding: 2rem;
-    }
-    .login-header {
-        text-align: center;
-        margin-bottom: 2rem;
-    }
-    .login-header h1 {
-        color: #14b8a6;
-        font-size: 2.5rem;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-    
-    col1, col2, col3 = st.columns([1, 2, 1])
-    
-    with col2:
-        st.markdown("""
-        <div class="login-header">
-            <h1>🔐 AUDIT-OS</h1>
-            <p style="color: #94a3b8;">Sistema di Audit Documentale</p>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        with st.form("login_form"):
-            username = st.text_input("👤 Username", placeholder="Inserisci username")
-            password = st.text_input("🔑 Password", type="password", placeholder="Inserisci password")
-            
-            col_btn1, col_btn2 = st.columns(2)
-            with col_btn1:
-                submit = st.form_submit_button("🚀 Accedi", use_container_width=True, type="primary")
-            
-            if submit:
-                if username and password:
-                    success, message = login(username, password)
-                    if success:
-                        st.success(message)
-                        st.rerun()
-                    else:
-                        st.error(f"❌ {message}")
-                else:
-                    st.warning("⚠️ Inserisci username e password")
-        
-        st.markdown("---")
-        st.caption("💡 Contatta l'amministratore per credenziali")
-    
-    return False
-
-
-def render_user_menu():
-    """Renderizza il menu utente nella sidebar."""
-    user = get_current_user()
-    
-    if user:
-        st.sidebar.markdown("---")
-        st.sidebar.markdown(f"### 👤 {user['name']}")
-        st.sidebar.caption(f"Ruolo: {'🔧 Admin' if user['role'] == 'admin' else '📋 Auditor'}")
-        
-        if st.sidebar.button("🚪 Logout", use_container_width=True):
-            logout()
-            st.rerun()
+# Fase 1 consolidamento: rimosse render_login_page / render_user_menu — UI
+# Streamlit dell'app legacy. Il login Amisys QHSE vive nel frontend React
+# (frontend/src/pages/Login.tsx) via POST /api/auth/login.
 
 
 # Inizializza file utenti se necessario

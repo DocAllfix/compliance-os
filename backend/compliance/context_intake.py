@@ -19,19 +19,28 @@ def build_context_prompt_block(ctx: CompanyContext) -> str:
         "no":          "not yet certified",
         "in_progress": "working towards certification",
     }
-    certified_str = certified_map.get(ctx.certified, ctx.certified)
+    # Sprint R0 — defensive normalisation: older frontends sent display labels
+    # ("No", "In progress") instead of canonical values, which fell through the
+    # map and produced broken prompt English ("Currently No against ISO
+    # standards"). Normalise case/spacing before the lookup.
+    certified_key = (ctx.certified or "").strip().lower().replace(" ", "_")
+    certified_str = certified_map.get(certified_key, ctx.certified)
+
+    # Normalise en-dash variants ("11–50") to plain hyphens for the prompt.
+    employee_range = (ctx.employee_range or "").replace("–", "-")
+    sites_count = (ctx.sites_count or "").replace("–", "-")
 
     sites_str = (
-        f"{ctx.sites_count} site"
-        if ctx.sites_count == "1"
-        else f"{ctx.sites_count} sites"
+        f"{sites_count} site"
+        if sites_count == "1"
+        else f"{sites_count} sites"
     )
 
     norms_str = ", ".join(ctx.norms) if ctx.norms else "no specific standards selected"
 
     return (
         f"Company context: {ctx.company_name} operates in {ctx.sector} "
-        f"with {ctx.employee_range} employees. "
+        f"with {employee_range} employees. "
         f"Currently {certified_str} against ISO standards. "
         f"Operating across {sites_str}.\n"
         f"Standards under assessment: {norms_str}."

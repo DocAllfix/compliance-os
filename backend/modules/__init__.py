@@ -1,1 +1,1 @@
-from .performance_logger import get_performance_logger, PerformanceLogger
+"""Amisys QHSE — moduli applicativi superstiti: auth_manager, db_manager."""

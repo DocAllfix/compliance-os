@@ -1,0 +1,86 @@
+# =============================================================================
+# ComplianceOS — Custom requirement set di ESEMPIO (Fase 7, PRD §1.4.4b)
+# =============================================================================
+# Questo file è la documentazione vivente del formato: copia, rinomina e
+# adatta per i criteri operativi reali del cliente. Il `label` è ciò che
+# l'utente seleziona nel wizard accanto agli standard ISO; ogni requirement
+# ha lo stesso shape delle clausole ISO e viene processato dal motore senza
+# alcuna modifica (batch screening + deep verification + severity floor).
+# Campi opzionali per requirement: area, is_spof, severity_floor,
+# critical_sectors, typical_ncs, atomic_requirements.
+
+label: "Hartwell Operating Criteria"
+description: >
+  Example operating criteria for Hartwell Engineering Ltd: internal protocols
+  that go beyond ISO requirements (supplier escalation, customer-imposed
+  traceability, internal sign-off rules).
+
+requirements:
+  - id: hartwell_oc_01
+    title: "OC-1 Supplier escalation protocol"
+    area: "Operating Criteria"
+    evidence_keywords:
+      - supplier escalation
+      - supplier nonconformance
+      - vendor corrective action
+    typical_ncs:
+      - "No documented escalation path for repeated supplier failures"
+      - "Escalation thresholds declared but no escalation ever recorded"
+    atomic_requirements:
+      - id: hartwell_oc_01.protocol.exists
+        text: "A documented escalation protocol defines thresholds (e.g. 2 rejects in a quarter) and escalation steps for failing suppliers."
+        verification_hint: "Procedure or work instruction naming thresholds and steps."
+        expected_evidence: ["procedure", "supplier_document"]
+        risk_if_missing: "MAJOR"
+      - id: hartwell_oc_01.applied
+        text: "Where supplier failures crossed the threshold, the escalation was actually executed and recorded."
+        verification_hint: "Escalation records / letters matching the reject statistics."
+        expected_evidence: ["record", "communication_record"]
+        risk_if_missing: "MINOR"
+    remediation_template:
+      what: "Document the supplier escalation protocol with explicit thresholds and steps; record every escalation."
+      who: "Purchasing Lead"
+      when_major: "30 days"
+      when_minor: "60 days"
+      effort: "MEDIUM"
+
+  - id: hartwell_oc_02
+    title: "OC-2 Customer-imposed material traceability"
+    area: "Operating Criteria"
+    is_spof: false
+    evidence_keywords:
+      - material traceability
+      - heat number
+      - batch traceability
+      - certificate of conformity
+    typical_ncs:
+      - "Heat/batch numbers not carried through to the finished-part record"
+    atomic_requirements:
+      - id: hartwell_oc_02.chain.complete
+        text: "Material traceability (heat/batch number) is maintained from goods-in to the finished-part record for customer-designated items."
+        verification_hint: "Router cards / job travellers showing the heat number end to end."
+        expected_evidence: ["record"]
+        risk_if_missing: "MAJOR"
+    remediation_template:
+      what: "Enforce heat/batch capture at every routing step for customer-designated items."
+      who: "Production Lead"
+      when_major: "30 days"
+      when_minor: "60 days"
+      effort: "HIGH"
+
+  - id: hartwell_oc_03
+    title: "OC-3 Dual sign-off on concession requests"
+    area: "Operating Criteria"
+    evidence_keywords:
+      - concession
+      - deviation request
+      - dual sign-off
+      - customer approval
+    typical_ncs:
+      - "Concessions raised and applied with a single internal signature"
+    remediation_template:
+      what: "Require Quality Manager + customer (or delegated authority) signature on every concession before use-as-is."
+      who: "Quality Manager"
+      when_major: "14 days"
+      when_minor: "30 days"
+      effort: "LOW"

@@ -1,10 +1,7 @@
+"""Amisys QHSE — transport LLM Azure OpenAI (Foundry v1).
+
+Superstite dello sgombero legacy (Fase 2 consolidamento, 2026-06):
+azure_openai_client_v2 + provider_profiles_v2 + stream_buffer +
+yaml_stream_parser + token_meter. Il resto della pipeline V2 AUDITORSEMI
+e il fallback Gemini sono stati rimossi (Azure-only).
 """
-AUDIT-OS Pipeline V2 — Triage Funnel architecture.
-
-Namespace isolato dal sistema V1 in `webapp/modules/`. Nessun import da V2 verso V1
-(eccetto tramite il config principale). Attivabile via env var USE_V2_PIPELINE.
-
-Vedi `docs/V2_EXECUTION_TRACKER.md` per la spec operativa completa.
-"""
-
-__version__ = "0.1.0-alpha"

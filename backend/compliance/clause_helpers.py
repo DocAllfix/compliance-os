@@ -37,25 +37,15 @@ _EXPIRY_RELEVANT_KEYWORDS = (
 
 def _is_high_frequency(clause_id: str) -> bool:
     """True if the clause is in any norm's HIGH_FREQUENCY list."""
-    try:
-        from backend.compliance.iso_clauses.iso9001_clauses import ISO9001_HIGH_FREQUENCY_CLAUSES
-        if clause_id in ISO9001_HIGH_FREQUENCY_CLAUSES:
-            return True
-    except ImportError:
-        pass
-    try:
-        from backend.compliance.iso_clauses.iso14001_clauses import ISO14001_HIGH_FREQUENCY_CLAUSES
-        if clause_id in ISO14001_HIGH_FREQUENCY_CLAUSES:
-            return True
-    except ImportError:
-        pass
-    try:
-        from backend.compliance.iso_clauses.iso45001_clauses import ISO45001_HIGH_FREQUENCY_CLAUSES
-        if clause_id in ISO45001_HIGH_FREQUENCY_CLAUSES:
-            return True
-    except ImportError:
-        pass
-    return False
+    from compliance.iso_clauses.iso9001_clauses import ISO9001_HIGH_FREQUENCY_CLAUSES
+    from compliance.iso_clauses.iso14001_clauses import ISO14001_HIGH_FREQUENCY_CLAUSES
+    from compliance.iso_clauses.iso45001_clauses import ISO45001_HIGH_FREQUENCY_CLAUSES
+
+    return (
+        clause_id in ISO9001_HIGH_FREQUENCY_CLAUSES
+        or clause_id in ISO14001_HIGH_FREQUENCY_CLAUSES
+        or clause_id in ISO45001_HIGH_FREQUENCY_CLAUSES
+    )
 
 
 def _is_context_passing(clause: Dict[str, Any]) -> bool:

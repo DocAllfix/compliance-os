@@ -1,5 +1,5 @@
-"""
-Modulo Database Manager per AUDIT-OS
+﻿"""
+Modulo Database Manager per Amisys QHSE
 Gestisce storico pratiche, logging e persistenza dati
 """
 
@@ -18,9 +18,20 @@ DATA_DIR.mkdir(exist_ok=True)
 
 
 def get_connection() -> sqlite3.Connection:
-    """Ottiene una connessione al database."""
+    """Ottiene una connessione al database.
+
+    Fase B: WAL mode — il DMS e lo scheduler scrivono accanto alle richieste
+    web; WAL consente letture concorrenti durante una scrittura ed è più
+    robusto contro 'database is locked'. PRAGMA idempotente, persistente sul
+    file DB (basta impostarlo una volta, ma è innocuo ripeterlo).
+    """
     conn = sqlite3.connect(str(DB_FILE), check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+    except sqlite3.OperationalError:
+        pass  # in-memory o filesystem che non supporta WAL — degrada al default
     return conn
 
 
@@ -111,7 +122,7 @@ def init_database():
 
 
 def init_compliance_tables():
-    """Inizializza le tabelle ComplianceOS (idempotente — CREATE IF NOT EXISTS)."""
+    """Inizializza le tabelle Amisys QHSE (idempotente — CREATE IF NOT EXISTS)."""
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -140,18 +151,40 @@ def init_compliance_tables():
         )
     """)
 
+    # Fase 4 consolidamento (PRD §1.4.8) — registro NC first-class.
+    # Sostituisce ncr_actions (che non aveva UNIQUE: ogni update inseriva una
+    # riga duplicata e severity/is_spof restavano sempre vuoti).
+    # Il result Pydantic resta uno snapshot immutabile; questo registro è
+    # l'overlay persistente (status, dismiss con motivazione, NC manuali)
+    # che viene fuso in lettura.
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS ncr_actions (
+        CREATE TABLE IF NOT EXISTS nonconformities (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            analysis_id TEXT REFERENCES compliance_analyses(id),
-            clause_id TEXT,
-            severity TEXT,
+            analysis_id TEXT NOT NULL REFERENCES compliance_analyses(id),
+            clause_id TEXT,                          -- NULL per NC manuali
+            source TEXT NOT NULL DEFAULT 'engine',   -- 'engine' | 'manual'
+            title TEXT DEFAULT '',
+            description TEXT DEFAULT '',
+            severity TEXT DEFAULT '',
             is_spof INTEGER DEFAULT 0,
-            status TEXT DEFAULT 'open',
-            notes TEXT,
+            status TEXT DEFAULT 'open',              -- open | in_progress | closed
+            dismissed INTEGER DEFAULT 0,
+            dismiss_reason TEXT DEFAULT '',
+            notes TEXT DEFAULT '',
+            created_by TEXT DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    # UNIQUE parziale: una sola riga engine per (analysis_id, clause_id);
+    # le NC manuali (clause_id NULL) possono essere multiple.
+    cursor.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_nc_analysis_clause
+        ON nonconformities(analysis_id, clause_id)
+        WHERE clause_id IS NOT NULL
+    """)
+
+    _migrate_ncr_actions(cursor)
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS compliance_chat (
@@ -163,10 +196,60 @@ def init_compliance_tables():
         )
     """)
 
+    # Fase 6 consolidamento — corpus persistito: i testi estratti in Phase 1
+    # vengono salvati su filesystem (backend/data/corpus/{analysis_id}/) e
+    # indicizzati qui. Abilita il re-analyse (scan ripetibile, fondamento di
+    # PRD §1.4.3) e il Compare su base documentale identica.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS analysis_documents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            analysis_id TEXT NOT NULL REFERENCES compliance_analyses(id),
+            filename TEXT NOT NULL,
+            chars INTEGER DEFAULT 0,
+            path TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_ad_analysis ON analysis_documents(analysis_id)")
+
+    # Fase D — provenance DMS: quale documento/versione del DMS ha alimentato
+    # questa analisi (abilita "compara v3 vs v5 della procedura"). ALTER idempotente.
+    for _col, _def in (("dms_document_id", "INTEGER"), ("dms_version", "INTEGER")):
+        try:
+            cursor.execute(f"ALTER TABLE analysis_documents ADD COLUMN {_col} {_def}")
+        except sqlite3.OperationalError:
+            pass
+
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_ca_user ON compliance_analyses(user_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_ca_date ON compliance_analyses(analysis_date DESC)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_ncr_analysis ON ncr_actions(analysis_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_nc_analysis ON nonconformities(analysis_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_analysis ON compliance_chat(analysis_id)")
+
+    # Sprint R1 — persist the full Phase 2 evidence YAML alongside the result.
+    # Enables: grounded chat over ALL documents (not only cited ones), delta
+    # comparison on evidence, and future re-scan scoping. Idempotent ALTER.
+    try:
+        cursor.execute("ALTER TABLE compliance_analyses ADD COLUMN evidence_yaml TEXT")
+    except sqlite3.OperationalError:
+        pass  # column already exists
+
+    # Fase B — audit trail append-only. Creata qui (db_manager possiede lo
+    # schema) per evitare la dipendenza circolare con audit_log.py.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            username    TEXT NOT NULL,
+            action      TEXT NOT NULL,
+            entity_type TEXT,
+            entity_id   TEXT,
+            detail      TEXT,
+            ip_address  TEXT
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts DESC)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log(username)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_log(entity_type, entity_id)")
 
     conn.commit()
     conn.close()
@@ -177,8 +260,14 @@ def init_compliance_tables():
 # ==============================================================================
 
 def save_compliance_analysis(analysis_id: str, user_id: str, result_json_str: str,
-                              context_json_str: str, docx_filename: str = "") -> None:
-    """Salva il risultato di un'analisi compliance nel DB."""
+                              context_json_str: str, docx_filename: str = "",
+                              evidence_yaml: str = "") -> None:
+    """Salva il risultato di un'analisi compliance nel DB.
+
+    Sprint R1: `evidence_yaml` persiste l'output integrale di Phase 2 così la
+    chat grounded e il delta possono vedere TUTTI i documenti, non solo quelli
+    citati in almeno un gap.
+    """
     import json as _json
     ctx = _json.loads(context_json_str)
     result = _json.loads(result_json_str)
@@ -197,8 +286,9 @@ def save_compliance_analysis(analysis_id: str, user_id: str, result_json_str: st
         INSERT OR REPLACE INTO compliance_analyses
         (id, user_id, company, norms, sector, employee_range, certified, sites_count,
          company_context_json, overall_score, major_count, minor_count, observation_count,
-         conformant_count, spof_count, documents_analyzed, result_json, docx_filename)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         conformant_count, spof_count, documents_analyzed, result_json, docx_filename,
+         evidence_yaml)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
         analysis_id, user_id,
         result.get("company", ""),
@@ -207,9 +297,17 @@ def save_compliance_analysis(analysis_id: str, user_id: str, result_json_str: st
         ctx.get("certified", ""), ctx.get("sites_count", ""),
         context_json_str, overall, major, minor, obs, conf, spof,
         result.get("documents_analyzed", 0), result_json_str, docx_filename,
+        evidence_yaml or "",
     ))
     conn.commit()
     conn.close()
+
+    # Fase 4 — popola/aggiorna il registro NC con i finding engine MAJOR/MINOR
+    # (non blocca mai il salvataggio dell'analisi).
+    try:
+        sync_engine_nonconformities(analysis_id, result)
+    except Exception as e:
+        print(f"[DB] sync registro NC fallito (non bloccante): {e}")
 
 
 def get_compliance_analyses(user_id: str, limit: int = 50) -> List[Dict]:
@@ -239,26 +337,223 @@ def get_compliance_analysis(analysis_id: str) -> Optional[Dict]:
     return dict(row) if row else None
 
 
-def update_ncr_status(analysis_id: str, clause_id: str, status: str,
-                       notes: str = "") -> bool:
-    """Aggiorna lo status di un'azione NCR (open/in_progress/closed)."""
+def _migrate_ncr_actions(cursor) -> None:
+    """Migrazione idempotente Fase 4: ncr_actions → nonconformities.
+
+    La vecchia tabella non aveva UNIQUE, quindi accumulava righe duplicate per
+    (analysis_id, clause_id): si tiene la più recente (updated_at massimo).
+    Dopo la copia la tabella legacy viene eliminata.
+    """
+    try:
+        exists = cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='ncr_actions'"
+        ).fetchone()
+        if not exists:
+            return
+        cursor.execute("""
+            INSERT OR IGNORE INTO nonconformities
+                (analysis_id, clause_id, source, severity, is_spof,
+                 status, notes, updated_at)
+            SELECT analysis_id, clause_id, 'engine',
+                   COALESCE(severity, ''), COALESCE(is_spof, 0),
+                   COALESCE(status, 'open'), COALESCE(notes, ''), updated_at
+            FROM ncr_actions a
+            WHERE a.clause_id IS NOT NULL
+              AND a.updated_at = (
+                  SELECT MAX(b.updated_at) FROM ncr_actions b
+                  WHERE b.analysis_id = a.analysis_id
+                    AND b.clause_id = a.clause_id
+              )
+        """)
+        migrated = cursor.execute("SELECT changes()").fetchone()[0]
+        cursor.execute("DROP TABLE ncr_actions")
+        if migrated:
+            print(f"[DB] Migrazione ncr_actions → nonconformities: {migrated} righe (dedup)")
+    except sqlite3.OperationalError as e:
+        print(f"[DB] Migrazione ncr_actions saltata: {e}")
+
+
+# ==============================================================================
+# CORPUS PERSISTITO (Fase 6 — fondamento di PRD §1.4.3)
+# ==============================================================================
+
+CORPUS_DIR = DATA_DIR / "corpus"
+
+
+def save_analysis_corpus(analysis_id: str, documents: List[Dict]) -> int:
+    """Salva i testi estratti (Phase 1) su filesystem + indice su DB.
+
+    Un .txt per documento (page markers inclusi) in
+    data/corpus/{analysis_id}/NNN.txt — il nome file originale vive solo nel
+    DB, così niente sanitizzazione fragile dei path.
+    """
+    folder = CORPUS_DIR / analysis_id
+    folder.mkdir(parents=True, exist_ok=True)
+
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO ncr_actions (analysis_id, clause_id, status, notes, updated_at)
-        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT DO NOTHING
+    cursor.execute("DELETE FROM analysis_documents WHERE analysis_id = ?", (analysis_id,))
+    saved = 0
+    for i, doc in enumerate(documents):
+        fname = str(doc.get("filename", "") or f"document_{i}")
+        content = str(doc.get("content", "") or "")
+        if not content.strip():
+            continue
+        path = folder / f"{i:03d}.txt"
+        path.write_text(content, encoding="utf-8")
+        # Fase D — provenance DMS (presente solo per analyze-dms; None per ZIP)
+        cursor.execute(
+            "INSERT INTO analysis_documents (analysis_id, filename, chars, path, "
+            "dms_document_id, dms_version) VALUES (?, ?, ?, ?, ?, ?)",
+            (analysis_id, fname, len(content), str(path),
+             doc.get("document_id"), doc.get("version")),
+        )
+        saved += 1
+    conn.commit()
+    conn.close()
+    return saved
+
+
+def load_analysis_corpus(analysis_id: str) -> List[Dict]:
+    """Ricostruisce la lista Phase-1 {filename, content, [document_id, version]}
+    dal corpus salvato. La provenance DMS (se presente) viene riportata così il
+    re-analyse la conserva."""
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT filename, path, dms_document_id, dms_version "
+        "FROM analysis_documents WHERE analysis_id = ? ORDER BY id",
+        (analysis_id,),
+    ).fetchall()
+    conn.close()
+
+    docs: List[Dict] = []
+    for r in rows:
+        try:
+            content = Path(r["path"]).read_text(encoding="utf-8")
+        except Exception:
+            continue
+        doc: Dict = {"filename": r["filename"], "content": content}
+        if r["dms_document_id"] is not None:
+            doc["document_id"] = r["dms_document_id"]
+            doc["version"] = r["dms_version"]
+        docs.append(doc)
+    return docs
+
+
+# ==============================================================================
+# REGISTRO NONCONFORMITÀ (Fase 4 — PRD §1.4.8)
+# ==============================================================================
+
+def sync_engine_nonconformities(analysis_id: str, result: Dict) -> int:
+    """Upsert delle NC engine dal result appena salvato.
+
+    Una riga per ogni ClauseGap MAJOR/MINOR. In caso di conflitto aggiorna i
+    campi derivati dal motore (severity, is_spof, title) ma NON tocca lo stato
+    gestito dall'utente (status, dismissed, dismiss_reason, notes).
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    count = 0
+    for norm in (result.get("norms") or []):
+        for clause in (norm.get("clauses") or []):
+            severity = str(clause.get("severity", ""))
+            if severity not in ("MAJOR", "MINOR"):
+                continue
+            cursor.execute("""
+                INSERT INTO nonconformities
+                    (analysis_id, clause_id, source, title, description,
+                     severity, is_spof, status)
+                VALUES (?, ?, 'engine', ?, ?, ?, ?, 'open')
+                ON CONFLICT(analysis_id, clause_id) WHERE clause_id IS NOT NULL
+                DO UPDATE SET
+                    severity = excluded.severity,
+                    is_spof = excluded.is_spof,
+                    title = excluded.title,
+                    description = excluded.description,
+                    updated_at = CURRENT_TIMESTAMP
+            """, (
+                analysis_id,
+                str(clause.get("clause_id", "")),
+                str(clause.get("clause_title", ""))[:200],
+                str(clause.get("finding", ""))[:500],
+                severity,
+                1 if clause.get("is_spof") else 0,
+            ))
+            count += 1
+    conn.commit()
+    conn.close()
+    return count
+
+
+def get_nonconformities(analysis_id: str) -> List[Dict]:
+    """Tutte le NC (engine + manuali) di un'analisi."""
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM nonconformities WHERE analysis_id = ? ORDER BY id",
+        (analysis_id,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def update_ncr_status(analysis_id: str, clause_id: str, status: str,
+                       notes: str = "") -> bool:
+    """Aggiorna lo status di una NC engine (open/in_progress/closed).
+
+    Fase 4: upsert reale sul registro (l'UNIQUE parziale rende l'ON CONFLICT
+    effettivo — la vecchia ncr_actions duplicava una riga a ogni click).
+    """
+    conn = get_connection()
+    conn.execute("""
+        INSERT INTO nonconformities (analysis_id, clause_id, source, status, notes)
+        VALUES (?, ?, 'engine', ?, ?)
+        ON CONFLICT(analysis_id, clause_id) WHERE clause_id IS NOT NULL
+        DO UPDATE SET status = excluded.status,
+                      notes = excluded.notes,
+                      updated_at = CURRENT_TIMESTAMP
     """, (analysis_id, clause_id, status, notes))
-    cursor.execute("""
-        UPDATE ncr_actions SET status = ?, notes = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE analysis_id = ? AND clause_id = ?
-    """, (status, notes, analysis_id, clause_id))
     conn.commit()
     conn.close()
     return True
 
 
-# Inizializza database all'import
+def add_manual_nonconformity(analysis_id: str, title: str, description: str,
+                              severity: str, created_by: str = "") -> int:
+    """NC inserita a mano dal manager (PRD §1.4.8: 'manually add-in their own')."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO nonconformities
+            (analysis_id, clause_id, source, title, description, severity, created_by)
+        VALUES (?, NULL, 'manual', ?, ?, ?, ?)
+    """, (analysis_id, title[:200], description[:1000], severity, created_by))
+    nc_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return int(nc_id)
+
+
+def set_nonconformity_dismissed(nc_id: int, analysis_id: str, dismissed: bool,
+                                 reason: str = "", by: str = "") -> bool:
+    """Dismiss/restore di una NC (PRD §1.4.8 'bin/hide findings').
+
+    Mai cancellazione: il record resta con motivazione e autore — trasparenza
+    difendibile. Il filtro su analysis_id impedisce dismiss cross-analisi.
+    """
+    conn = get_connection()
+    cur = conn.execute("""
+        UPDATE nonconformities
+        SET dismissed = ?, dismiss_reason = ?, created_by = COALESCE(NULLIF(?, ''), created_by),
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND analysis_id = ?
+    """, (1 if dismissed else 0, reason if dismissed else "", by, nc_id, analysis_id))
+    changed = cur.rowcount
+    conn.commit()
+    conn.close()
+    return changed > 0
+
+
+# Inizializza database all'import (audit_log incluso in init_compliance_tables)
 init_database()
 init_compliance_tables()
 

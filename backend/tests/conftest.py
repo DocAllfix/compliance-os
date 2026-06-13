@@ -1,5 +1,5 @@
 """
-Pytest fixtures shared by all ComplianceOS test files.
+Pytest fixtures shared by all Amisys QHSE test files.
 
 The fast suite (-m "not slow") relies only on synthetic in-memory fixtures
 and never touches Azure or Gemini. The slow suite (-m slow) requires:
@@ -21,6 +21,14 @@ import pytest
 # Make `backend/` importable as a package root for tests
 BACKEND_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND_DIR))
+
+# Sprint R7 — the slow suite needs the Azure/Gemini credentials documented in
+# backend/.env; load them here so `pytest -m slow` works without manual export.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(BACKEND_DIR / ".env", override=False)
+except ImportError:
+    pass
 
 
 # ── Fast fixtures (no LLM) ───────────────────────────────────────────────────

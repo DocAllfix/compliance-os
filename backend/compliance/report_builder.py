@@ -1,5 +1,5 @@
 """
-ComplianceOS — DOCX Report Builder.
+Amisys QHSE — DOCX Report Builder.
 
 Produces a manager-friendly gap analysis report using python-docx.
 
@@ -41,6 +41,8 @@ from compliance.schemas import (
     ClauseGap,
     CompanySnapshot,
     ComplianceAnalysisResult,
+    CrossClauseFinding,
+    DocumentedInfoReport,
     ExpiredDocument,
     ExpiryReport,
     NormGapReport,
@@ -54,7 +56,8 @@ C_MINOR       = RGBColor(0xF9, 0x73, 0x16)
 C_OBSERVATION = RGBColor(0xCA, 0x8A, 0x04)
 C_CONFORMANT  = RGBColor(0x16, 0xA3, 0x4A)
 C_SPOF        = RGBColor(0xEA, 0x58, 0x0C)
-C_DARK        = RGBColor(0x1E, 0x29, 0x3B)
+C_DARK        = RGBColor(0x1B, 0x29, 0x44)   # brand navy
+C_ACCENT      = RGBColor(0xE0, 0x8A, 0x1E)   # brand orange (Amisys)
 C_GREY        = RGBColor(0x64, 0x74, 0x8B)
 C_WHITE       = RGBColor(0xFF, 0xFF, 0xFF)
 C_LIGHT_BG    = RGBColor(0xF8, 0xFA, 0xFC)
@@ -76,10 +79,20 @@ SEVERITY_HEX = {
 
 # ── Public entry point ────────────────────────────────────────────────────────
 
-def build_docx_report(result: ComplianceAnalysisResult) -> bytes:
+def build_docx_report(
+    result: ComplianceAnalysisResult,
+    register: Optional[List[dict]] = None,
+) -> bytes:
     """
     Build a DOCX report from a ComplianceAnalysisResult. Returns the raw
     bytes of the .docx file.
+
+    Fase 4 (PRD §1.4.8) — `register` è la lista NC dal registro persistente:
+    i finding dismissed escono dalle sezioni operative (Top Priority
+    Findings, SPoF, Critical Findings, Action Plan) e finiscono
+    nell'appendice "Set-aside findings" con motivazione; le NC manuali
+    hanno la loro sezione. La Clause Matrix resta lo snapshot integrale
+    (trasparenza) ma marca le righe messe da parte come "Set aside".
 
     Section order (Sprint 4):
       Cover page
@@ -95,6 +108,12 @@ def build_docx_report(result: ComplianceAnalysisResult) -> bytes:
     doc = Document()
     _configure_document(doc)
 
+    # Registro NC: clausole messe da parte + NC manuali
+    register = register or []
+    dismissed_rows = [nc for nc in register if nc.get("dismissed")]
+    dismissed_ids = {nc.get("clause_id") for nc in dismissed_rows if nc.get("clause_id")}
+    manual_ncs = [nc for nc in register if nc.get("source") == "manual" and not nc.get("dismissed")]
+
     _add_cover(doc, result)
     doc.add_page_break()
 
@@ -103,8 +122,8 @@ def build_docx_report(result: ComplianceAnalysisResult) -> bytes:
         _add_company_snapshot(doc, result.executive_summary.company_snapshot)
         doc.add_page_break()
 
-    # §2 Executive Narrative + legacy per-norm summary
-    _add_executive_summary(doc, result)
+    # §2 Executive Narrative + per-norm summary
+    _add_executive_summary(doc, result, dismissed_ids)
     doc.add_page_break()
 
     # §3 Document Expiry Status — only when Phase 2.5 ran and produced output
@@ -114,8 +133,23 @@ def build_docx_report(result: ComplianceAnalysisResult) -> bytes:
         _add_expiry_section(doc, result.expiry_report)
         doc.add_page_break()
 
+    # §3b Required Documented Information (Phase 2.6 — Sprint R6)
+    if result.documented_info_report is not None and (
+        result.documented_info_report.absent_count > 0
+        or result.documented_info_report.weak_count > 0
+    ):
+        _add_documented_info_section(doc, result.documented_info_report)
+        doc.add_page_break()
+
+    # §3c Cross-Clause Coherence (Phase 3.5 — Sprint R6)
+    if result.cross_clause_findings:
+        _add_cross_clause_section(doc, result.cross_clause_findings)
+        doc.add_page_break()
+
     all_gaps = [g for norm in result.norms for g in norm.clauses]
-    spof_gaps = [g for g in all_gaps if g.is_spof and g.severity == "MAJOR"]
+    # Fase 4: i finding messi da parte escono dalle sezioni operative
+    operative_gaps = [g for g in all_gaps if g.clause_id not in dismissed_ids]
+    spof_gaps = [g for g in operative_gaps if g.is_spof and g.severity == "MAJOR"]
 
     # §4 Single Points of Failure
     if spof_gaps:
@@ -128,18 +162,28 @@ def build_docx_report(result: ComplianceAnalysisResult) -> bytes:
         doc.add_page_break()
 
     # §6 Detailed Clause Analysis
-    major_gaps = [g for g in all_gaps if g.severity == "MAJOR"]
+    major_gaps = [g for g in operative_gaps if g.severity == "MAJOR"]
     if major_gaps:
         _add_critical_findings(doc, major_gaps)
         doc.add_page_break()
 
-    actionable = [g for g in all_gaps if g.severity in ("MAJOR", "MINOR")]
+    actionable = [g for g in operative_gaps if g.severity in ("MAJOR", "MINOR")]
     if actionable:
         _add_action_plan(doc, actionable)
         doc.add_page_break()
 
+    # §6b Manually recorded nonconformities (Fase 4)
+    if manual_ncs:
+        _add_manual_ncs_section(doc, manual_ncs)
+        doc.add_page_break()
+
     for norm_report in result.norms:
-        _add_clause_matrix(doc, norm_report)
+        _add_clause_matrix(doc, norm_report, dismissed_ids)
+        doc.add_page_break()
+
+    # §6c Set-aside findings (Fase 4 — dismissed, con motivazione)
+    if dismissed_rows:
+        _add_set_aside_section(doc, dismissed_rows)
         doc.add_page_break()
 
     # §7 Methodology & Disclaimer (always last)
@@ -171,7 +215,16 @@ def _configure_document(doc: Document) -> None:
 # ── Cover page ────────────────────────────────────────────────────────────────
 
 def _add_cover(doc: Document, result: ComplianceAnalysisResult) -> None:
-    doc.add_paragraph()
+    brand = doc.add_paragraph()
+    brand.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    b1 = brand.add_run("Amisys")
+    b1.font.size = Pt(14)
+    b1.font.bold = True
+    b1.font.color.rgb = C_ACCENT
+    b2 = brand.add_run("  qhse")
+    b2.font.size = Pt(11)
+    b2.font.color.rgb = C_GREY
+
     doc.add_paragraph()
 
     p = doc.add_paragraph()
@@ -186,7 +239,7 @@ def _add_cover(doc: Document, result: ComplianceAnalysisResult) -> None:
     run2 = p2.add_run("REPORT")
     run2.font.size  = Pt(22)
     run2.font.bold  = True
-    run2.font.color.rgb = C_MAJOR
+    run2.font.color.rgb = C_ACCENT
 
     doc.add_paragraph()
 
@@ -203,14 +256,17 @@ def _add_cover(doc: Document, result: ComplianceAnalysisResult) -> None:
 
     doc.add_paragraph()
     doc.add_paragraph()
-    _add_centred(doc, f"Prepared for {result.company} by ComplianceOS", size=9, color=C_GREY, italic=True)
+    _add_centred(doc, f"Prepared for {result.company} by Amisys QHSE", size=9, color=C_GREY, italic=True)
     _add_centred(doc, f"Documents analysed: {result.documents_analyzed}", size=9, color=C_GREY, italic=True)
 
 
 # ── Executive Summary ─────────────────────────────────────────────────────────
 
-def _add_executive_summary(doc: Document, result: ComplianceAnalysisResult) -> None:
+def _add_executive_summary(
+    doc: Document, result: ComplianceAnalysisResult, dismissed_ids: set | None = None
+) -> None:
     _h1(doc, "Executive Summary")
+    dismissed_ids = dismissed_ids or set()
 
     for norm in result.norms:
         _h2(doc, norm.norm)
@@ -233,9 +289,10 @@ def _add_executive_summary(doc: Document, result: ComplianceAnalysisResult) -> N
             r_spof.font.color.rgb = C_SPOF
             r_spof.font.bold = True
 
-        # Top 3 risks
+        # Top 3 risks — i finding messi da parte non sono prioritari
         top = sorted(
-            [g for g in norm.clauses if g.severity in ("MAJOR", "MINOR")],
+            [g for g in norm.clauses
+             if g.severity in ("MAJOR", "MINOR") and g.clause_id not in dismissed_ids],
             key=lambda g: (0 if g.is_spof else 1, g.score)
         )[:3]
 
@@ -314,15 +371,35 @@ def _add_critical_findings(doc: Document, majors: List[ClauseGap]) -> None:
         table._tbl.remove(table.rows[0]._tr)
 
         add_row("Clause", gap.clause_title)
-        add_row("Score", f"{gap.score}/100 — {gap.severity}", SEVERITY_COLOR.get(gap.severity))
+        score_label = f"{gap.score}/100 — {gap.severity}"
+        if gap.confidence is not None:
+            score_label += f"   (confidence {round(gap.confidence * 100)}%)"
+        add_row("Score", score_label, SEVERITY_COLOR.get(gap.severity))
         add_row("Finding", gap.finding)
+        if gap.hedged and gap.hedge_note:
+            add_row("Caution", gap.hedge_note, C_GREY)
+        # Sprint R6 — per-requirement verification from the deep pass
+        if gap.requirement_checks:
+            checks_str = "\n".join(
+                f"[{chk.status}] {chk.requirement_id.split('.', 1)[-1].replace('_', ' ')}"
+                + (f" — {chk.note}" if chk.note else "")
+                for chk in gap.requirement_checks
+            )
+            add_row("Checks", checks_str)
         if gap.sources:
             sources_str = "; ".join(
                 f"{s.file_name}{', p.' + str(s.pages[0]) if s.pages else ''}"
                 for s in gap.sources[:3]
             )
             add_row("Evidence", sources_str)
-        add_row("Action", gap.remediation.what)
+        # Sprint R6 (PRD 1.4.7) — two-level remediation when available
+        if gap.remediation.correction or gap.remediation.corrective_action:
+            if gap.remediation.correction:
+                add_row("Correction", gap.remediation.correction)
+            if gap.remediation.corrective_action:
+                add_row("Corrective action", gap.remediation.corrective_action)
+        else:
+            add_row("Action", gap.remediation.what)
         add_row("Responsible", gap.remediation.who)
         add_row("Deadline", gap.remediation.when)
         add_row("Effort", gap.remediation.effort)
@@ -349,7 +426,7 @@ def _add_action_plan(doc: Document, gaps: List[ClauseGap]) -> None:
         p.runs[0].font.bold  = True
         p.runs[0].font.size  = Pt(9)
         p.runs[0].font.color.rgb = C_WHITE
-        _set_cell_bg(cell, "1E293B")
+        _set_cell_bg(cell, "1B2944")
 
     sorted_gaps = sorted(gaps, key=lambda g: (0 if g.is_spof else 1, 0 if g.severity == "MAJOR" else 1, g.score))
 
@@ -381,8 +458,11 @@ def _add_action_plan(doc: Document, gaps: List[ClauseGap]) -> None:
 
 # ── Full Clause Matrix ────────────────────────────────────────────────────────
 
-def _add_clause_matrix(doc: Document, norm: NormGapReport) -> None:
+def _add_clause_matrix(
+    doc: Document, norm: NormGapReport, dismissed_ids: set | None = None
+) -> None:
     _h1(doc, f"Clause Matrix — {norm.norm}")
+    dismissed_ids = dismissed_ids or set()
 
     table = doc.add_table(rows=1, cols=4)
     table.style = "Table Grid"
@@ -395,7 +475,7 @@ def _add_clause_matrix(doc: Document, norm: NormGapReport) -> None:
         p.runs[0].font.bold  = True
         p.runs[0].font.size  = Pt(9)
         p.runs[0].font.color.rgb = C_WHITE
-        _set_cell_bg(cell, "1E293B")
+        _set_cell_bg(cell, "1B2944")
 
     sorted_clauses = sorted(norm.clauses, key=lambda g: (
         0 if g.is_spof and g.severity == "MAJOR" else 1,
@@ -404,22 +484,29 @@ def _add_clause_matrix(doc: Document, norm: NormGapReport) -> None:
     ))
 
     for i, gap in enumerate(sorted_clauses):
+        set_aside = gap.clause_id in dismissed_ids
         row = table.add_row()
         row.cells[0].text = gap.clause_id
         row.cells[1].text = gap.clause_title
         row.cells[2].text = str(gap.score)
-        row.cells[3].text = f"{'⚠ SPoF + ' if gap.is_spof else ''}{gap.severity}"
+        if set_aside:
+            row.cells[3].text = "Set aside"
+        else:
+            row.cells[3].text = f"{'⚠ SPoF + ' if gap.is_spof else ''}{gap.severity}"
 
-        color = SEVERITY_COLOR.get(gap.severity, C_DARK)
+        color = C_GREY if set_aside else SEVERITY_COLOR.get(gap.severity, C_DARK)
         for cell in row.cells:
             for run in cell.paragraphs[0].runs:
                 run.font.size = Pt(9)
         row.cells[2].paragraphs[0].runs[0].font.color.rgb = color
         row.cells[3].paragraphs[0].runs[0].font.color.rgb = color
-        if gap.is_spof:
+        if gap.is_spof and not set_aside:
             row.cells[3].paragraphs[0].runs[0].font.bold = True
 
-        bg = "FEF2F2" if gap.severity == "MAJOR" else "FFF7ED" if gap.severity == "MINOR" else "F8FAFC" if i % 2 == 0 else "FFFFFF"
+        if set_aside:
+            bg = "F8FAFC"
+        else:
+            bg = "FEF2F2" if gap.severity == "MAJOR" else "FFF7ED" if gap.severity == "MINOR" else "F8FAFC" if i % 2 == 0 else "FFFFFF"
         for cell in row.cells:
             _set_cell_bg(cell, bg)
 
@@ -484,6 +571,52 @@ def _set_col_widths(table, widths) -> None:
                 row.cells[i].width = width
 
 
+# ── PQQ / SQ export (Fase H, PRD §1.6.9) ──────────────────────────────────────
+
+def build_pqq_docx(company: str, items: List[dict]) -> bytes:
+    """DOCX delle risposte PQQ/SQ. Disclaimer 'Draft for review' in testa e in
+    coda: è una bozza grounded sull'evidenza, MAI una submission."""
+    doc = Document()
+    _configure_document(doc)
+
+    brand = doc.add_paragraph()
+    brand.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    b1 = brand.add_run("Amisys"); b1.font.size = Pt(13); b1.font.bold = True; b1.font.color.rgb = C_ACCENT
+    b2 = brand.add_run("  qhse"); b2.font.size = Pt(10); b2.font.color.rgb = C_GREY
+
+    _add_centred(doc, "PRE-QUALIFICATION QUESTIONNAIRE — DRAFT", size=18, bold=True)
+    if company:
+        _add_centred(doc, company, size=13, color=C_GREY)
+    doc.add_paragraph()
+
+    warn = doc.add_paragraph()
+    wr = warn.add_run(
+        "DRAFT FOR REVIEW — NOT A SUBMISSION. These answers are generated from "
+        "your documented evidence and must be reviewed, completed where marked "
+        "'needs input', and approved before any tender submission."
+    )
+    wr.font.size = Pt(9.5); wr.font.italic = True; wr.font.color.rgb = C_MAJOR
+    doc.add_paragraph()
+
+    for i, item in enumerate(items, 1):
+        _h2(doc, f"Q{i}. {str(item.get('question', '')).strip()}")
+        if str(item.get("status")) == "needs_input":
+            tag = doc.add_paragraph()
+            t = tag.add_run("NEEDS INPUT")
+            t.font.size = Pt(8.5); t.font.bold = True; t.font.color.rgb = C_MINOR
+        _body(doc, str(item.get("answer", "")).strip() or "—")
+        doc.add_paragraph()
+
+    doc.add_paragraph()
+    _add_centred(doc,
+                 "Draft produced by Amisys QHSE. Review before submission.",
+                 size=8.5, italic=True, color=C_GREY)
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
 def _set_cell_bg(cell, hex_color: str) -> None:
     tc   = cell._tc
     tcPr = tc.get_or_add_tcPr()
@@ -501,7 +634,7 @@ def _add_bottom_border(paragraph) -> None:
     bottom.set(qn("w:val"),   "single")
     bottom.set(qn("w:sz"),    "4")
     bottom.set(qn("w:space"), "1")
-    bottom.set(qn("w:color"), "1E293B")
+    bottom.set(qn("w:color"), "1B2944")
     pBdr.append(bottom)
     pPr.append(pBdr)
 
@@ -599,7 +732,7 @@ def _add_expiry_table(
         run.font.bold = True
         run.font.size = Pt(9)
         run.font.color.rgb = C_WHITE
-        _set_cell_bg(cell, "1E293B")
+        _set_cell_bg(cell, "1B2944")
 
     for idx, d in enumerate(docs):
         r = table.add_row()
@@ -635,6 +768,123 @@ def _last_path_segment(path: str) -> str:
     return p.rsplit("/", 1)[-1] if "/" in p else p
 
 
+# ── §3b Required Documented Information (Sprint R6) ─────────────────────────
+
+def _add_documented_info_section(doc: Document, report: DocumentedInfoReport) -> None:
+    _h1(doc, "§3b  Required Documented Information")
+
+    _body(doc, (
+        f"The standards oblige the organisation to maintain or retain specific "
+        f"documented information. Of the {len(report.items)} required items "
+        f"checked, {report.found_count} were found in the package, "
+        f"{report.weak_count} matched only weakly, and {report.absent_count} "
+        f"could not be found anywhere — including under alternative names. "
+        f"This check classifies documents by their content, never by file name."
+    ))
+
+    rows = [i for i in report.items if i.status in ("ABSENT", "FOUND_WEAK")]
+    if not rows:
+        return
+
+    table = doc.add_table(rows=1, cols=5)
+    table.style = "Table Grid"
+    _set_col_widths(table, [Inches(2.2), Inches(1.1), Inches(0.9), Inches(1.0), Inches(1.3)])
+
+    for i, h in enumerate(["Required item", "Standard", "Kind", "Status", "Note"]):
+        cell = table.rows[0].cells[i]
+        cell.text = h
+        run = cell.paragraphs[0].runs[0]
+        run.font.bold = True
+        run.font.size = Pt(9)
+        run.font.color.rgb = C_WHITE
+        _set_cell_bg(cell, "1B2944")
+
+    for item in rows:
+        r = table.add_row()
+        status_label = "Not found" if item.status == "ABSENT" else "Weak match"
+        note = (
+            item.matched_file_name or ""
+            if item.status == "FOUND_WEAK"
+            else f"risk if missing: {item.risk_if_missing}"
+        )
+        vals = [
+            item.item,
+            item.norm.rsplit(":", 1)[0],
+            item.retain_or_maintain.lower(),
+            status_label,
+            note,
+        ]
+        for j, v in enumerate(vals):
+            r.cells[j].text = v
+            run = r.cells[j].paragraphs[0].runs[0]
+            run.font.size = Pt(9)
+
+        sev_color = C_MAJOR if (item.status == "ABSENT" and item.risk_if_missing == "MAJOR") \
+            else C_MINOR if item.status == "ABSENT" else C_OBSERVATION
+        r.cells[3].paragraphs[0].runs[0].font.bold = True
+        r.cells[3].paragraphs[0].runs[0].font.color.rgb = sev_color
+
+        row_bg = "FEF2F2" if (item.status == "ABSENT" and item.risk_if_missing == "MAJOR") \
+            else "FFF7ED" if item.status == "ABSENT" else "FEFCE8"
+        for cell in r.cells:
+            _set_cell_bg(cell, row_bg)
+
+
+# ── §3c Cross-Clause Coherence (Sprint R6) ───────────────────────────────────
+
+_CHAIN_STATUS_COLOR = {
+    "LINKED":         C_CONFORMANT,
+    "PARTIAL":        C_MINOR,
+    "BROKEN":         C_MAJOR,
+    "NOT_ASSESSABLE": C_GREY,
+}
+
+_CHAIN_STATUS_LABEL = {
+    "LINKED":         "Linked",
+    "PARTIAL":        "Partial",
+    "BROKEN":         "Broken",
+    "NOT_ASSESSABLE": "Not assessable",
+}
+
+
+def _add_cross_clause_section(doc: Document, findings: List[CrossClauseFinding]) -> None:
+    _h1(doc, "§3c  Cross-Clause Coherence")
+
+    _body(doc, (
+        "A management system is more than its individual clauses: a risk "
+        "identified in planning must have a corresponding operational control "
+        "and a monitoring indicator; objectives must be measured and reviewed. "
+        "The following chains were verified across the cited evidence."
+    ))
+
+    order = {"BROKEN": 0, "PARTIAL": 1, "NOT_ASSESSABLE": 2, "LINKED": 3}
+    for f in sorted(findings, key=lambda x: order.get(x.status, 9)):
+        p = doc.add_paragraph()
+        badge = p.add_run(f"[{_CHAIN_STATUS_LABEL.get(f.status, f.status)}]  ")
+        badge.font.bold = True
+        badge.font.color.rgb = _CHAIN_STATUS_COLOR.get(f.status, C_DARK)
+        title = p.add_run(f.title)
+        title.font.bold = True
+        chain = p.add_run(f"   ({' → '.join(f.clause_ids)})")
+        chain.font.size = Pt(8)
+        chain.font.color.rgb = C_GREY
+        p.paragraph_format.space_before = Pt(8)
+        p.paragraph_format.space_after = Pt(2)
+
+        _body(doc, f.narrative)
+
+        if f.sources:
+            p3 = doc.add_paragraph()
+            p3.add_run("Evidence: ").font.bold = True
+            refs = []
+            for s in f.sources[:3]:
+                pages = ", ".join(f"p.{pg}" for pg in s.pages) if s.pages else ""
+                refs.append(f"{_last_path_segment(s.file_name)}{' ' + pages if pages else ''}")
+            run = p3.add_run(";  ".join(refs))
+            run.font.size = Pt(9)
+            run.font.color.rgb = C_GREY
+
+
 # ── §5 Top 10 Priority Integrations (Sprint 4) ───────────────────────────────
 
 def _add_priority_integrations(doc: Document, integrations: List[str]) -> None:
@@ -658,6 +908,77 @@ def _add_priority_integrations(doc: Document, integrations: List[str]) -> None:
         p.paragraph_format.space_after = Pt(6)
 
 
+# ── §6b Manually recorded nonconformities (Fase 4) ───────────────────────────
+
+def _add_manual_ncs_section(doc: Document, manual_ncs: List[dict]) -> None:
+    _h1(doc, "§6b  Manually Recorded Nonconformities")
+    _body(doc, (
+        "The following items were recorded directly by the organisation, "
+        "alongside the findings produced by the analysis."
+    ))
+    for nc in manual_ncs:
+        sev = str(nc.get("severity", "") or "").upper()
+        p = doc.add_paragraph()
+        badge = p.add_run(f"[{sev or 'NOTE'}]  ")
+        badge.font.bold = True
+        badge.font.color.rgb = SEVERITY_COLOR.get(sev, C_DARK)
+        title = p.add_run(str(nc.get("title", "")))
+        title.font.bold = True
+        p.paragraph_format.space_before = Pt(8)
+        p.paragraph_format.space_after = Pt(2)
+        if nc.get("description"):
+            _body(doc, str(nc["description"]))
+        meta = doc.add_paragraph()
+        run = meta.add_run(
+            f"Recorded by {nc.get('created_by') or 'unknown'}"
+            f"  ·  status: {nc.get('status', 'open')}"
+        )
+        run.font.size = Pt(9)
+        run.font.color.rgb = C_GREY
+
+
+# ── §6c Set-aside findings (Fase 4 — PRD §1.4.8) ─────────────────────────────
+
+def _add_set_aside_section(doc: Document, dismissed_rows: List[dict]) -> None:
+    _h1(doc, "§6c  Set-aside Findings")
+    _body(doc, (
+        "The organisation has chosen to set aside the following findings. "
+        "They are excluded from the action plan above but remain on record "
+        "with the stated rationale — set-aside items are never deleted."
+    ))
+
+    table = doc.add_table(rows=1, cols=4)
+    table.style = "Table Grid"
+    _set_col_widths(table, [Inches(1.8), Inches(0.8), Inches(2.5), Inches(1.2)])
+    for i, h in enumerate(["Finding", "Severity", "Reason given", "Set aside by"]):
+        cell = table.rows[0].cells[i]
+        cell.text = h
+        run = cell.paragraphs[0].runs[0]
+        run.font.bold = True
+        run.font.size = Pt(9)
+        run.font.color.rgb = C_WHITE
+        _set_cell_bg(cell, "1B2944")
+
+    for nc in dismissed_rows:
+        r = table.add_row()
+        label = str(nc.get("title") or nc.get("clause_id") or "")
+        sev = str(nc.get("severity", "") or "").upper()
+        vals = [
+            label,
+            sev,
+            str(nc.get("dismiss_reason", "") or ""),
+            str(nc.get("created_by", "") or ""),
+        ]
+        for j, v in enumerate(vals):
+            r.cells[j].text = v
+            run = r.cells[j].paragraphs[0].runs[0]
+            run.font.size = Pt(9)
+        if sev in SEVERITY_COLOR:
+            r.cells[1].paragraphs[0].runs[0].font.color.rgb = SEVERITY_COLOR[sev]
+        for cell in r.cells:
+            _set_cell_bg(cell, "F8FAFC")
+
+
 # ── §7 Methodology & Disclaimer (Sprint 4) ───────────────────────────────────
 
 def _add_methodology(doc: Document, result: ComplianceAnalysisResult) -> None:
@@ -665,7 +986,7 @@ def _add_methodology(doc: Document, result: ComplianceAnalysisResult) -> None:
 
     _h2(doc, "How this report was produced")
     _body(doc, (
-        f"This analysis was generated by ComplianceOS, an advisory tool that "
+        f"This analysis was generated by Amisys QHSE, an advisory tool that "
         f"reads documentation packages and maps the evidence against the "
         f"requirements of selected ISO management system standards. "
         f"For this report, {result.documents_analyzed} document"
@@ -684,7 +1005,7 @@ def _add_methodology(doc: Document, result: ComplianceAnalysisResult) -> None:
 
     _h2(doc, "Limits of this analysis")
     _body(doc, (
-        "ComplianceOS is an advisory tool, not a certification service. It "
+        "Amisys QHSE is an advisory tool, not a certification service. It "
         "summarises documented evidence in the package provided and flags "
         "where requirements appear unmet. It does not interview personnel, "
         "observe processes on site, or examine documents outside the package. "

@@ -1,7 +1,7 @@
 """
 V2 — Token Meter (Fase 7.5).
 
-Singleton process-level che raccoglie il consumo di token Gemini per session_id
+Singleton process-level che raccoglie il consumo di token LLM per session_id
 e calcola il costo stimato in USD/EUR.
 
 Origine dati: `response.usage_metadata` esposto dal SDK `google-genai`. Tre
@@ -88,6 +88,13 @@ PRICING: Dict[str, Dict[str, Optional[float]]] = {
         "input": 0.40,
         "output": 1.60,
         "cached_input": 0.10,
+    },
+    # Azure OpenAI GPT-4.1 full — profilo "deep" opzionale (Stage B,
+    # cross-clause, executive summary, chat). Data Zone Standard EU.
+    "gpt-4.1": {
+        "input": 2.00,
+        "output": 8.00,
+        "cached_input": 0.50,
     },
     # Azure OpenAI GPT-4o-mini — usato dallo spike `webapp/spike_llm/`.
     # 128K context, 16K output cap (HARD limit, batch ridotti obbligatori).

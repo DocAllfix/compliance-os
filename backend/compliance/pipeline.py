@@ -1,5 +1,5 @@
 """
-ComplianceOS — Compliance Pipeline Orchestrator.
+Amisys QHSE — Compliance Pipeline Orchestrator.
 
 Four-phase pipeline:
     Phase 1: ZIP extraction → text extraction per document
@@ -21,7 +21,6 @@ import logging
 import os
 import re
 import time
-import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -29,42 +28,19 @@ from typing import Any, Callable, Dict, List, Optional
 from compliance.gap_analyzer import analyze_compliance
 from compliance.schemas import CompanyContext, ComplianceAnalysisResult
 
+# Fase B: Phase 1 extraction vive in compliance/extraction.py (riusabile dal
+# DMS senza trascinare ChromaDB). Re-import con gli alias storici così il
+# resto di pipeline.py e i test che importano da `compliance.pipeline`
+# restano invariati.
+from compliance.extraction import (
+    extract_document as _read_file_content,
+    _extract_pdf_text,
+    _extract_spreadsheet_text,
+    _repair_zip_name,
+    _PDF_PAGE_MIN_NATIVE_CHARS,
+)
+
 _log = logging.getLogger("compliance.pipeline")
-
-
-def _repair_zip_name(raw_name: str) -> str:
-    """Sprint G.2 (rivisto): ripara nomi file ZIP letti con cp437 quando il
-    contenuto vero era UTF-8.
-
-    Casi gestiti:
-    1. Nome già pulito (ASCII o UTF-8 valido) → ritornato as-is con NFC normalize.
-    2. Nome corrotto (cp437 misread di bytes UTF-8): re-encode cp437 + decode
-       utf-8. Se riesce e produce solo caratteri NFC validi senza combining
-       residui, usiamo il risultato; altrimenti fallback al nome originale.
-
-    Esempio (CTM 45001.zip):
-        raw: "Idonieta╠Ç BRUNO.pdf"   (cp437 di b'\\xc3\\xa0')
-        out: "Idonietà BRUNO.pdf"     (NFC riparato)
-
-    Sempre normalizzato in NFC alla fine (gestisce anche il caso macOS NFD
-    "a + U+0300" come precauzione aggiuntiva).
-    """
-    # Heuristic: i caratteri "spazzatura" tipici di cp437-misread di bytes
-    # UTF-8 multibyte. Se troviamo uno di questi indizi, tentiamo il round-trip.
-    suspicious_chars = set("╠╣╔═╗╚╝┌┐└┘├┤┬┴┼")
-    has_suspicious = any(ch in suspicious_chars for ch in raw_name)
-
-    if has_suspicious:
-        try:
-            repaired = raw_name.encode("cp437").decode("utf-8")
-            # Verifichiamo che il risultato sia "ragionevole": nessun byte non stampabile
-            if all(ord(ch) >= 32 or ch in "\t\n" for ch in repaired):
-                return unicodedata.normalize("NFC", repaired)
-        except (UnicodeEncodeError, UnicodeDecodeError):
-            pass
-
-    # Default path: normalize NFC (gestisce anche NFD da macOS)
-    return unicodedata.normalize("NFC", raw_name)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -108,57 +84,18 @@ def _extract_documents(zip_bytes: bytes, emit: Callable) -> List[Dict[str, Any]]
 
     return docs
 
-
-def _read_file_content(filename: str, raw: bytes) -> str:
-    """Best-effort text extraction. Falls back to v2 text_extractor for PDFs."""
-    ext = Path(filename).suffix.lower()
-
-    if ext in (".txt", ".md", ".csv"):
-        try:
-            return raw.decode("utf-8", errors="replace")
-        except Exception:
-            return ""
-
-    if ext == ".pdf":
-        # Try native text extraction first (fast, free)
-        text = ""
-        try:
-            import io
-            import pdfminer.high_level as pdfminer  # type: ignore
-            text = pdfminer.extract_text(io.BytesIO(raw)) or ""
-        except Exception:
-            pass
-
-        # If no text extracted, the PDF is likely scanned — use Azure DI OCR
-        if not text.strip():
-            from compliance.azure_ocr import ocr_pdf_bytes
-            text = ocr_pdf_bytes(raw, filename=filename)
-
-        return text
-
-    if ext in (".docx", ".doc"):
-        try:
-            import io, docx  # type: ignore
-            doc = docx.Document(io.BytesIO(raw))
-            return "\n".join(p.text for p in doc.paragraphs)
-        except Exception:
-            return ""
-
-    return ""
-
-
 # ──────────────────────────────────────────────────────────────────────────────
 # Phase 2 helper — evidence extraction via LLM
 # ──────────────────────────────────────────────────────────────────────────────
 
 # ── Phase 2 tuning ─────────────────────────────────────────────────────────
 # Batch size chosen for GPT-4.1-mini "needle-in-haystack" sweet spot:
-#   - 5 docs/batch = ~95% per-doc completion quality
-#   - With 6 parallel workers and Azure 200K TPM, max in-flight ~144K input tokens
-#     leaving ~30% safety margin to avoid 429.
-#   - Scales: 28 docs = 1 wave, 100 docs = 4 waves (~50s), 200 docs = 7 waves (~85s).
+#   - 5 docs/batch = ~95% per-doc completion quality (NON cambia coi worker)
+#   - 14 worker × ~24K token/batch ≈ 340K in-flight: ampio margine sulla
+#     quota 16M TPM del deployment France Central. Override via env.
+#   - Scales: 70 docs = 1 wave, 200 docs = 3 waves.
 EVIDENCE_BATCH_SIZE = 5
-EVIDENCE_MAX_WORKERS = 6
+EVIDENCE_MAX_WORKERS = int(os.environ.get("EVIDENCE_MAX_WORKERS", "14"))
 EVIDENCE_MAX_OUTPUT_TOKENS = 8000
 EVIDENCE_DOC_CHAR_CAP = 15_000
 
@@ -300,8 +237,7 @@ def _validate_evidence_cards(combined_yaml: str) -> None:
     fields with safe defaults; this function exists so we can spot prompt
     regressions early via logs / counters.
     """
-    import logging as _log
-    log = _log.getLogger("compliance.pipeline.phase2_validator")
+    log = logging.getLogger("compliance.pipeline.phase2_validator")
     try:
         # Reuse the canonical parser to stay in sync with downstream behaviour
         from compliance.gap_analyzer import _parse_evidence_yaml
@@ -339,15 +275,11 @@ def _validate_evidence_cards(combined_yaml: str) -> None:
 def _build_evidence_azure_client():
     """Build a single Azure client to share across worker threads.
 
-    Returns None if Azure is unreachable (caller falls back to Gemini per-batch).
+    Returns None if Azure is unreachable (caller emits synthetic cards per-batch).
     """
     try:
-        from v2.azure_openai_client_v2 import AzureOpenAIClientV2
-        from v2.provider_profiles_v2 import PROFILES
-        profile = PROFILES.get("gpt-4.1-mini-azure")
-        if profile is None:
-            return None
-        return AzureOpenAIClientV2(profile=profile)
+        from v2.azure_openai_client_v2 import make_client
+        return make_client()  # provider standard (mini): alto volume, 1 call/doc
     except Exception as e:
         _log.warning("[Phase 2] Azure client init failed: %s — batches will fall back", e)
         return None
@@ -377,7 +309,7 @@ def _call_llm_for_batch(
     """
     Call Azure on a single batch with retry/backoff for 429.
     Returns raw YAML on success, None on irrecoverable failure (caller emits
-    synthetic cards). Falls back to Gemini on Azure exhaustion.
+    synthetic cards). Azure-only: niente fallback esterno.
     """
     user_prompt = _build_user_prompt_for_batch(batch_docs)
     messages = [
@@ -423,7 +355,7 @@ def _call_llm_for_batch(
                     str(e)[:200],
                 )
                 if not is_transient:
-                    break  # non-retryable → fall through to Gemini
+                    break  # non-retryable
             # Backoff before next attempt
             if attempt < EVIDENCE_MAX_RETRIES - 1:
                 wait = min(
@@ -432,18 +364,14 @@ def _call_llm_for_batch(
                 )
                 time.sleep(wait)
 
-    # Azure exhausted or unavailable → try Gemini fallback per batch.
-    try:
-        from compliance.gap_analyzer import _call_llm_gemini
-        raw = _call_llm_gemini(messages)
-        if raw and raw.strip():
-            return raw
-    except Exception as e:
-        _log.warning(
-            "[Phase 2] Batch %d/%d Gemini fallback failed: %s",
-            batch_idx + 1, total_batches, e,
-        )
-
+    # Fase 2 consolidamento: provider Azure-ONLY (fallback Gemini rimosso,
+    # decisione utente 2026-06-12). Su esaurimento retry il chiamante emette
+    # le carte sintetiche readable:false — i documenti non si perdono mai.
+    _log.error(
+        "[Phase 2] Batch %d/%d: Azure exhausted, no fallback configured — "
+        "synthetic cards will be emitted",
+        batch_idx + 1, total_batches,
+    )
     return None
 
 
@@ -529,20 +457,26 @@ def _renumber_evidence_ids(text: str) -> str:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def run_compliance_pipeline(
-    zip_bytes: bytes,
+    zip_bytes: Optional[bytes],
     company_context: CompanyContext,
     emitter: Optional[Callable[[float, str], None]] = None,
+    documents_override: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """
-    Full four-phase compliance pipeline.
+    Full compliance pipeline.
 
     Args:
-        zip_bytes:       Raw bytes of the uploaded ZIP archive.
-        company_context: Validated CompanyContext from wizard Step 0.
-        emitter:         Optional callable(pct, msg) for SSE streaming.
+        zip_bytes:          Raw bytes of the uploaded ZIP archive (None quando
+                            si usa documents_override).
+        company_context:    Validated CompanyContext from wizard Step 0.
+        emitter:            Optional callable(pct, msg) for SSE streaming.
+        documents_override: Fase 6 — lista {filename, content} già estratta
+                            (corpus persistito): salta la Phase 1 e rilancia
+                            l'analisi sulla stessa base documentale
+                            (re-analyse, fondamento di PRD §1.4.3).
 
     Returns:
-        dict with keys: success, analysis_id, result (ComplianceAnalysisResult as dict), error
+        dict with keys: success, analysis_id, result, evidence_yaml, error
     """
     def emit(pct: float, msg: str) -> None:
         if emitter:
@@ -554,8 +488,12 @@ def run_compliance_pipeline(
     start = time.monotonic()
 
     try:
-        # ── Phase 1: Extract documents from ZIP ──────────────────────────────
-        docs = _extract_documents(zip_bytes, emit)
+        # ── Phase 1: Extract documents from ZIP (o riuso corpus salvato) ─────
+        if documents_override is not None:
+            docs = [d for d in documents_override if str(d.get("content", "")).strip()]
+            emit(8.0, f"Reusing stored corpus: {len(docs)} documents (extraction skipped).")
+        else:
+            docs = _extract_documents(zip_bytes or b"", emit)
         if not docs:
             emit(100.0, "No readable documents found in archive.")
             return {"success": False, "error": "no_documents", "analysis_id": None, "result": None}
@@ -578,6 +516,7 @@ def run_compliance_pipeline(
             evidence_yaml=evidence_yaml,
             company_context=company_context,
             emitter=lambda pct, msg: emit(35.0 + pct * 0.55, msg),
+            documents=docs,  # Sprint R2: full texts for chunk index + deep pass
         )
 
         # Attach Phase 2.5 output to the final result
@@ -585,8 +524,7 @@ def run_compliance_pipeline(
             result.expiry_report = ExpiryReport(**expiry_dict)
         except Exception as e:
             # Schema validation failure shouldn't kill the analysis — log and skip
-            import logging as _log
-            _log.getLogger("compliance.pipeline").warning(
+            logging.getLogger("compliance.pipeline").warning(
                 f"ExpiryReport schema validation failed: {e!s} — continuing without it"
             )
 
@@ -594,23 +532,33 @@ def run_compliance_pipeline(
         emit(92.0, "Phase 4: drafting executive summary…")
         try:
             from compliance.schemas import ExecutiveSummary
-            es_dict = generate_executive_summary(result)
+            es_dict = generate_executive_summary(result, evidence_yaml=evidence_yaml)
             if es_dict:
                 result.executive_summary = ExecutiveSummary(**es_dict)
         except Exception as e:
-            import logging as _log
-            _log.getLogger("compliance.pipeline").warning(
+            logging.getLogger("compliance.pipeline").warning(
                 f"ExecutiveSummary generation failed: {e!s} — continuing without it"
             )
+
+        # ── Fase 6: persisti il corpus estratto (abilita re-analyse) ─────────
+        try:
+            from modules.db_manager import save_analysis_corpus
+            saved = save_analysis_corpus(result.analysis_id, docs)
+            _log.info("Corpus persisted: %d documents for %s", saved, result.analysis_id)
+        except Exception as e:
+            _log.warning("Corpus persistence failed (non-blocking): %s", e)
 
         elapsed = round(time.monotonic() - start, 1)
         emit(100.0, f"Pipeline complete in {elapsed}s.")
 
         return {
-            "success":     True,
-            "analysis_id": result.analysis_id,
-            "result":      result,
-            "error":       None,
+            "success":       True,
+            "analysis_id":   result.analysis_id,
+            "result":        result,
+            # Sprint R1: expose the full Phase 2 output so the endpoint can
+            # persist it (chat over all documents, delta, re-scan scoping).
+            "evidence_yaml": evidence_yaml,
+            "error":         None,
         }
 
     except Exception as e:
@@ -627,7 +575,10 @@ def run_compliance_pipeline(
 # Phase 4 — Executive Summary generation (Sprint 4)
 # ──────────────────────────────────────────────────────────────────────────────
 
-def generate_executive_summary(result: "ComplianceAnalysisResult") -> Optional[Dict[str, Any]]:
+def generate_executive_summary(
+    result: "ComplianceAnalysisResult",
+    evidence_yaml: str = "",
+) -> Optional[Dict[str, Any]]:
     """
     Build the executive summary for the manager-facing report.
 
@@ -648,8 +599,7 @@ def generate_executive_summary(result: "ComplianceAnalysisResult") -> Optional[D
     try:
         system_prompt = prompt_path.read_text(encoding="utf-8")
     except Exception as e:
-        import logging as _log
-        _log.getLogger("compliance.pipeline").warning(f"executive_summary_prompt.md missing: {e}")
+        logging.getLogger("compliance.pipeline").warning(f"executive_summary_prompt.md missing: {e}")
         return None
 
     context_block = build_context_prompt_block(result.context)
@@ -709,6 +659,42 @@ def generate_executive_summary(result: "ComplianceAnalysisResult") -> Optional[D
             "expiring_soon":        [d.model_dump() for d in result.expiry_report.expiring_soon],
         }
 
+    # Sprint R8 — signatories from the evidence cards (Q9 `signed_by`), so the
+    # prompt's key_roles rule can actually be satisfied. Before this fix the
+    # compact JSON carried no signed_by at all and key_roles was unfillable.
+    if evidence_yaml.strip():
+        try:
+            from compliance.gap_analyzer import _parse_evidence_yaml
+            signatories = []
+            for card in _parse_evidence_yaml(evidence_yaml):
+                signer = str(card.get("signed_by") or "").strip()
+                if signer and signer.lower() not in ("null", "none", "unknown"):
+                    signatories.append({
+                        "signed_by": signer[:120],
+                        "file_name": str(card.get("file_name", ""))[:120],
+                        "doc_type": str(card.get("doc_type", "other")),
+                    })
+            if signatories:
+                compact["signatories"] = signatories[:20]
+        except Exception:
+            pass
+
+    # Sprint R6 — give the narrative visibility of the new engine outputs
+    if result.documented_info_report is not None:
+        compact["documented_info"] = {
+            "absent": [
+                {"item": i.item, "norm": i.norm, "risk": i.risk_if_missing}
+                for i in result.documented_info_report.items if i.status == "ABSENT"
+            ],
+            "found_count": result.documented_info_report.found_count,
+        }
+    if result.cross_clause_findings:
+        compact["cross_clause"] = [
+            {"title": f.title, "status": f.status, "narrative": f.narrative[:200]}
+            for f in result.cross_clause_findings
+            if f.status in ("BROKEN", "PARTIAL")
+        ]
+
     user_prompt = (
         "## ComplianceAnalysisResult (compact JSON view)\n"
         "```json\n"
@@ -717,15 +703,14 @@ def generate_executive_summary(result: "ComplianceAnalysisResult") -> Optional[D
         "Produce the executive summary JSON object as instructed."
     )
 
-    # Call Azure GPT-4.1-mini, with Gemini fallback
+    # Call Azure (Azure-only — fallback Gemini rimosso, decisione utente
+    # 2026-06-12). deep=True: l'executive summary è user-facing per Fred e
+    # usa il profilo deep quando configurato. Su errore il summary viene
+    # saltato e l'analisi resta valida (campo opzionale).
     raw = ""
     try:
-        from v2.azure_openai_client_v2 import AzureOpenAIClientV2
-        from v2.provider_profiles_v2 import PROFILES
-        profile = PROFILES.get("gpt-4.1-mini-azure")
-        if profile is None:
-            raise RuntimeError("gpt-4.1-mini-azure profile not configured")
-        client = AzureOpenAIClientV2(profile=profile)
+        from v2.azure_openai_client_v2 import make_client
+        client = make_client(deep=True)
         stream = client.chat_stream(
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -743,28 +728,10 @@ def generate_executive_summary(result: "ComplianceAnalysisResult") -> Optional[D
                     chunks.append(content)
         raw = "".join(chunks).strip()
     except Exception as e:
-        import logging as _log
-        _log.getLogger("compliance.pipeline").warning(
-            f"Azure executive_summary failed, falling back to Gemini: {e}"
+        logging.getLogger("compliance.pipeline").error(
+            f"Azure executive_summary failed — no fallback configured: {e}"
         )
-        try:
-            from v2.gemini_client_v2 import GeminiClientV2, analyze_batch_streaming
-            from v2.provider_profiles_v2 import PROFILES as _P
-            profile = _P.get("gemini-2.5-flash")
-            if profile is None:
-                raise RuntimeError("gemini-2.5-flash profile not configured")
-            gc = GeminiClientV2(profile=profile)
-            raw = (analyze_batch_streaming(
-                client=gc,
-                batch_docs=[{"filename": "exec_summary_query", "content": user_prompt}],
-                universal_prompt=system_prompt,
-            ).text or "").strip()
-        except Exception as e2:
-            import logging as _log
-            _log.getLogger("compliance.pipeline").warning(
-                f"Both LLM providers failed for executive_summary: {e2}"
-            )
-            return None
+        return None
 
     # Parse JSON (tolerate code fences)
     text = raw.strip()
@@ -783,8 +750,7 @@ def generate_executive_summary(result: "ComplianceAnalysisResult") -> Optional[D
             return None
         return data
     except Exception as e:
-        import logging as _log
-        _log.getLogger("compliance.pipeline").warning(
+        logging.getLogger("compliance.pipeline").warning(
             f"executive_summary JSON parse failed: {e!s} — raw[:200]={raw[:200]!r}"
         )
         return None

@@ -95,3 +95,60 @@ def test_expiry_relevant_detection(sample_clause_critical, sample_clause_passing
     assert is_expiry_relevant(sample_clause_critical) is True
     # §4.1 context → not expiry-relevant
     assert is_expiry_relevant(sample_clause_passing) is False
+
+
+# ── Sprint R0 regression: tiering on the REAL clause registries ──────────────
+# The fixtures above use synthetic dicts with explicit is_spof, which masked a
+# broken `backend.compliance...` import inside _is_high_frequency: it silently
+# returned False at runtime, degrading every HIGH_FREQUENCY non-SPoF clause to
+# "standard" (floor MINOR instead of MAJOR). These tests run against the real
+# registries so the bug can never come back unnoticed.
+
+def test_high_frequency_clauses_are_critical_on_real_registries():
+    from compliance.clause_helpers import _is_high_frequency
+    from compliance.iso_clauses.iso9001_clauses import (
+        ISO9001_CLAUSES, ISO9001_HIGH_FREQUENCY_CLAUSES,
+    )
+    from compliance.iso_clauses.iso14001_clauses import (
+        ISO14001_CLAUSES, ISO14001_HIGH_FREQUENCY_CLAUSES,
+    )
+    from compliance.iso_clauses.iso45001_clauses import (
+        ISO45001_CLAUSES, ISO45001_HIGH_FREQUENCY_CLAUSES,
+    )
+
+    for registry, high_freq in (
+        (ISO9001_CLAUSES, ISO9001_HIGH_FREQUENCY_CLAUSES),
+        (ISO14001_CLAUSES, ISO14001_HIGH_FREQUENCY_CLAUSES),
+        (ISO45001_CLAUSES, ISO45001_HIGH_FREQUENCY_CLAUSES),
+    ):
+        for clause_id in high_freq:
+            assert _is_high_frequency(clause_id), (
+                f"{clause_id} is in a HIGH_FREQUENCY list but _is_high_frequency "
+                f"returned False — the import inside clause_helpers is broken again"
+            )
+            clause = registry.get(clause_id)
+            if clause is None:
+                continue
+            assert get_criticality_tier(clause) == "critical", (
+                f"{clause_id} is HIGH_FREQUENCY but tier is "
+                f"{get_criticality_tier(clause)!r} — severity floor degraded"
+            )
+            assert get_severity_floor(clause) == "MAJOR"
+            assert get_weight(clause) == 5
+
+
+def test_known_previously_degraded_clauses_are_critical():
+    """The six clauses that were silently degraded before the Sprint R0 fix."""
+    from compliance.iso_clauses.iso9001_clauses import ISO9001_CLAUSES
+    from compliance.iso_clauses.iso14001_clauses import ISO14001_CLAUSES
+    from compliance.iso_clauses.iso45001_clauses import ISO45001_CLAUSES
+
+    degraded = [
+        (ISO9001_CLAUSES, "9001_7_2"), (ISO9001_CLAUSES, "9001_7_3"),
+        (ISO14001_CLAUSES, "14001_4_3"), (ISO14001_CLAUSES, "14001_7_5"),
+        (ISO45001_CLAUSES, "45001_5_4"), (ISO45001_CLAUSES, "45001_7_3"),
+    ]
+    for registry, clause_id in degraded:
+        clause = registry[clause_id]
+        assert get_criticality_tier(clause) == "critical", clause_id
+        assert get_severity_floor(clause) == "MAJOR", clause_id

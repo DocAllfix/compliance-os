@@ -1,5 +1,5 @@
 """
-ComplianceOS — Phase 2.5: Expiry Check.
+Amisys QHSE — Phase 2.5: Expiry Check.
 
 Structured, deterministic extraction of document expiry status from the
 evidence cards produced by Phase 2.

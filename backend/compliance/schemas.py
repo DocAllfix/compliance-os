@@ -27,6 +27,22 @@ class RemediationPlan(BaseModel):
     who: str    # es. "Quality Manager", "HSE Officer"
     when: str   # es. "30 days", "3 months"
     effort: str  # LOW / MEDIUM / HIGH
+    # Sprint R4 (PRD 1.4.7) — two-level remediation:
+    #   correction        = immediate fix for the specific instance
+    #   corrective_action = wider systemic fix preventing recurrence
+    # `what` remains the primary action text for backwards compatibility.
+    correction: Optional[str] = None
+    corrective_action: Optional[str] = None
+
+
+class RequirementCheck(BaseModel):
+    """Sprint R4 — one atomic requirement verified by the deep pass."""
+    requirement_id: str            # e.g. "9001_9_3.inputs.complete"
+    status: str                    # PRESENT / PARTIAL / ABSENT
+    evidence_quote: Optional[str] = None   # verbatim quote supporting the status
+    pages: List[int] = []
+    file_name: Optional[str] = None
+    note: Optional[str] = None     # e.g. "resource adequacy not discussed"
 
 
 class ClauseGap(BaseModel):
@@ -38,6 +54,12 @@ class ClauseGap(BaseModel):
     finding: str         # max 150 words, plain language UK English
     sources: List[TraceabilityLink]
     remediation: RemediationPlan
+    # Sprint R4 (PRD 1.4.6) — reasoning exposure
+    confidence: Optional[float] = None          # 0.0-1.0 verdict confidence
+    requirement_checks: List[RequirementCheck] = []
+    hedged: bool = False                        # True when evidence ambiguous
+    hedge_note: Optional[str] = None
+    deep_verified: bool = False                 # True when Stage B ran
 
 
 class NormGapReport(BaseModel):
@@ -80,6 +102,70 @@ class ExpiryReport(BaseModel):
     no_expiry_information: int                   # count of cards with no expiry_date
 
 
+class DocumentedInfoItem(BaseModel):
+    """Sprint R3 — one required documented-information item (Phase 2.6)."""
+    item: str                      # e.g. "Management review minutes"
+    clause_id: str                 # e.g. "9001_9_3"
+    norm: str                      # e.g. "ISO 9001:2015"
+    retain_or_maintain: str        # MAINTAIN / RETAIN
+    status: str                    # FOUND / FOUND_WEAK / ABSENT
+    matched_evidence_id: Optional[str] = None
+    matched_file_name: Optional[str] = None
+    match_method: str = "none"     # metadata / semantic / llm_rescued / llm_confirmed_absent / not_found
+    risk_if_missing: str = "MINOR"
+
+
+class DocumentedInfoReport(BaseModel):
+    """Phase 2.6 output — coverage of the standards' mandatory documented info."""
+    items: List[DocumentedInfoItem]
+    found_count: int
+    weak_count: int
+    absent_count: int
+
+
+class RiskItem(BaseModel):
+    """Sprint R8 (P2) — one risk extracted from a risk document."""
+    ref: Optional[str] = None            # document's own id, e.g. "R-03"
+    description: str
+    category: Optional[str] = None       # risk / opportunity / document's own
+    score: Optional[str] = None          # as written in the document
+    score_present: bool = False
+    mitigation: Optional[str] = None
+    mitigation_present: bool = False
+    owner: Optional[str] = None
+    owner_present: bool = False
+    pages: List[int] = []
+
+
+class RiskDocumentExtract(BaseModel):
+    """Structured extraction of one risk document."""
+    file_name: str
+    evidence_id: str
+    methodology: Optional[str] = None    # declared assessment method
+    methodology_declared: bool = False
+    risks: List[RiskItem] = []
+
+
+class RiskRegisterExtract(BaseModel):
+    """Phase 2.7 output — the structured risk register across all risk docs."""
+    documents: List[RiskDocumentExtract]
+    total_risks: int
+    unscored_count: int                  # entries without a score (criteria not applied)
+    unmitigated_count: int
+    unowned_count: int
+
+
+class CrossClauseFinding(BaseModel):
+    """Sprint R5 — one cross-clause coherence verdict (Phase 3.5)."""
+    chain_id: str                  # e.g. "9001_risk_to_control"
+    norm: str
+    title: str                     # e.g. "Risk → operational control → monitoring"
+    status: str                    # LINKED / PARTIAL / BROKEN / NOT_ASSESSABLE
+    narrative: str                 # plain-language explanation, UK English
+    clause_ids: List[str] = []
+    sources: List[TraceabilityLink] = []
+
+
 class CompanySnapshot(BaseModel):
     """Section 1 of the manager-facing report (executive summary)."""
     company_name: str
@@ -108,3 +194,6 @@ class ComplianceAnalysisResult(BaseModel):
     top_gaps: List[ClauseGap]                            # top 5 Major/SPoF cross-norma
     expiry_report: Optional[ExpiryReport] = None         # Phase 2.5 output (optional)
     executive_summary: Optional[ExecutiveSummary] = None # Phase 4 LLM output (optional)
+    documented_info_report: Optional[DocumentedInfoReport] = None  # Phase 2.6 (Sprint R3)
+    cross_clause_findings: List[CrossClauseFinding] = []           # Phase 3.5 (Sprint R5)
+    risk_register_extract: Optional[RiskRegisterExtract] = None    # Phase 2.7 (Sprint R8, P2)

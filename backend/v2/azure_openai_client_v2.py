@@ -1,22 +1,29 @@
 """
 V2 — Azure OpenAI Client (gpt-4.1-mini Azure Foundry v1).
 
-Drop-in replacement per `gemini_client_v2.analyze_batch_streaming` quando
-`V2_PROVIDER=gpt-4.1-mini-azure`. Validato in spike (4 pratiche, 0 parse
-failures, 0 batch persi col fallback Gemini, GDPR Azure EU).
+Client streaming Azure OpenAI GPT-4.1-mini — provider UNICO di Amisys QHSE
+(Foundry v1, GDPR Azure EU). Il fallback Gemini è stato rimosso (2026-06-12).
 
 Caratteristiche chiave:
 - Endpoint: https://<resource>.services.ai.azure.com/openai/v1 (Foundry v1
   OpenAI-compatible). NON AzureOpenAI SDK; usa OpenAI SDK con base_url.
 - Auto-cache prefix >= 1024 token (sconto 75% input cached).
 - Retry: MAX_STREAM_RETRIES=3, backoff exponential, jitter implicito via wait.
-- Fallback: solleva `AzureRateLimitExhausted` quando i retry per rate_limit
-  (429) sono esauriti. La pipeline cattura l'eccezione per failover a Gemini.
+- Solleva `AzureRateLimitExhausted` quando i retry per rate_limit (429)
+  sono esauriti; i chiamanti degradano in modo controllato (carte sintetiche,
+  fallback gaps, 502 per la chat).
 
 Env var richieste:
     AZURE_OPENAI_API_KEY                    chiave API
     AZURE_OPENAI_ENDPOINT                   https://<resource>.services.ai.azure.com/openai/v1
     AZURE_OPENAI_DEPLOYMENT_GPT_41_MINI     deployment name per gpt-4.1-mini
+
+Profilo deep opzionale (gpt-4.1 full su risorsa separata, es. France Central
+Data Zone Standard EU) — per-modello, con fallback alle var generiche:
+    COMPLIANCE_DEEP_PROVIDER=gpt-4.1-azure  attiva il profilo deep
+    AZURE_OPENAI_DEPLOYMENT_GPT_41          deployment name per gpt-4.1
+    AZURE_OPENAI_ENDPOINT_GPT_41            endpoint risorsa (se diversa)
+    AZURE_OPENAI_API_KEY_GPT_41             chiave risorsa (se diversa)
 
 Riusa da V2 (zero modifiche):
 - StreamBuffer, StreamResult, DEFAULT_MAX_CHARS (stream_buffer)
@@ -150,7 +157,20 @@ def _build_user_prompt(
 
 _DEPLOYMENT_ENV = {
     "gpt-4.1-mini": "AZURE_OPENAI_DEPLOYMENT_GPT_41_MINI",
+    "gpt-4.1": "AZURE_OPENAI_DEPLOYMENT_GPT_41",
 }
+
+
+def _env_suffix(model_name: str) -> str:
+    """gpt-4.1 -> GPT_41, gpt-4.1-mini -> GPT_41_MINI (stesso schema dei deployment)."""
+    return model_name.upper().replace("-", "_").replace(".", "")
+
+
+def _model_env(model_name: str, base: str) -> str:
+    """Legge la var per-modello (es. AZURE_OPENAI_ENDPOINT_GPT_41) con
+    fallback alla var generica (AZURE_OPENAI_ENDPOINT)."""
+    specific = os.environ.get(f"{base}_{_env_suffix(model_name)}", "").strip()
+    return specific or os.environ.get(base, "").strip()
 
 
 class AzureOpenAIClientV2:
@@ -173,8 +193,8 @@ class AzureOpenAIClientV2:
             )
         self.profile = profile
 
-        api_key = api_key or os.environ.get("AZURE_OPENAI_API_KEY", "").strip()
-        endpoint = endpoint or os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip()
+        api_key = api_key or _model_env(profile.name, "AZURE_OPENAI_API_KEY")
+        endpoint = endpoint or _model_env(profile.name, "AZURE_OPENAI_ENDPOINT")
         if not api_key:
             raise ValueError("AZURE_OPENAI_API_KEY non settato.")
         if not endpoint:
@@ -216,6 +236,35 @@ class AzureOpenAIClientV2:
         )
 
 
+def make_client(deep: bool = False) -> "AzureOpenAIClientV2":
+    """
+    Factory unica per i client LLM di Amisys QHSE.
+
+    deep=False → provider standard (gpt-4.1-mini): Phase 2, Stage A, 2.6, 2.7.
+    deep=True  → profilo COMPLIANCE_DEEP_PROVIDER (es. gpt-4.1 full Data Zone
+                 EU) per le fasi di giudizio: Stage B, cross-clause, executive
+                 summary, chat. Se il profilo deep non è configurato o il suo
+                 deployment manca, degrada al provider standard con un warning
+                 — la pipeline non si ferma mai per un profilo opzionale.
+    """
+    import logging
+    from .provider_profiles_v2 import (
+        get_profile, resolve_deep_provider_key, resolve_provider_key,
+    )
+
+    if deep:
+        deep_key = resolve_deep_provider_key()
+        if deep_key:
+            try:
+                return AzureOpenAIClientV2(profile=get_profile(deep_key))
+            except Exception as e:
+                logging.getLogger("v2.azure_client").warning(
+                    "Profilo deep %r non utilizzabile (%s) — fallback al "
+                    "provider standard", deep_key, e,
+                )
+    return AzureOpenAIClientV2(profile=get_profile(resolve_provider_key()))
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Eccezioni
 # ──────────────────────────────────────────────────────────────────────────────
@@ -228,7 +277,7 @@ class _StreamRetryable(Exception):
 class AzureRateLimitExhausted(Exception):
     """
     Sollevato quando tutti i retry per rate_limit (429) sono falliti.
-    La pipeline cattura per failover automatico a Gemini sul singolo batch.
+    I chiamanti degradano in modo controllato (niente fallback esterno).
     """
 
     def __init__(self, batch_idx: int, n_retries: int, last_error: str):
@@ -260,7 +309,7 @@ def analyze_batch_streaming(
     model_override: Optional[str] = None,
 ) -> StreamResult:
     """
-    Stesso contratto di `gemini_client_v2.analyze_batch_streaming`.
+    Contratto streaming standard del transport Amisys QHSE.
     `cached_content_id` è ignorato (Azure caching automatico).
 
     Solleva `AzureRateLimitExhausted` se i retry per rate_limit sono esauriti.

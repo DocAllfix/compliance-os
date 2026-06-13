@@ -5,9 +5,16 @@ Ogni `ProviderProfile` cattura i limiti tecnici e i tuning dei batch per un
 modello specifico. La `pipeline.py` legge il profilo per orchestrare il flow
 senza conoscere le specifiche del provider sottostante.
 
-I 2 provider supportati in PROD locale:
-- gemini-2.5-flash    → default V2 (Gemini 2.5 Flash via gemini_client_v2)
-- gpt-4.1-mini-azure  → Azure OpenAI GPT-4.1-mini (Foundry v1, EU region)
+Provider:
+- gpt-4.1-mini-azure  → Azure OpenAI GPT-4.1-mini (Foundry v1, EU region) —
+                        provider standard: Phase 2 evidence, Stage A, Phase
+                        2.6/2.7.
+- gpt-4.1-azure       → Azure OpenAI GPT-4.1 full (Data Zone Standard EU) —
+                        profilo "deep" opzionale per le fasi di giudizio:
+                        Stage B, cross-clause, executive summary, chat.
+                        Attivo SOLO se COMPLIANCE_DEEP_PROVIDER=gpt-4.1-azure
+                        e il deployment è configurato; altrimenti tutte le
+                        fasi restano sulla mini (zero cambi di comportamento).
 
 Tutti i campi sono override-abili via env var:
     V2_PROVIDER_<KEY_NORMALIZED>_<FIELD>
@@ -24,7 +31,7 @@ class ProviderProfile:
     """Configurazione tecnica di un provider LLM per la pipeline V2."""
     key: str                     # es. "gpt-4.1-mini-azure" — chiave PROFILES
     name: str                    # es. "gpt-4.1-mini" — nome modello in PRICING token_meter
-    api_kind: str                # "azure_openai" | "gemini_v2_native"
+    api_kind: str                # "azure_openai"
 
     context_window: int          # token totali context+output
     max_output_tokens: int       # cap hard del modello
@@ -35,21 +42,23 @@ class ProviderProfile:
     max_workers: int
 
 
+# Fase 2 consolidamento: profilo gemini-2.5-flash rimosso (Azure-only,
+# decisione utente 2026-06-12 — chiave Gemini non utilizzabile).
 PROFILES: dict[str, ProviderProfile] = {
-    "gemini-2.5-flash": ProviderProfile(
-        key="gemini-2.5-flash",
-        name="gemini-2.5-flash",
-        api_kind="gemini_v2_native",
-        context_window=1_000_000,
-        max_output_tokens=64_000,
-        batch_max_files=4,
-        batch_max_chars=50_000,
-        doc_cap_multiplier=1.0,
-        max_workers=7,
-    ),
     "gpt-4.1-mini-azure": ProviderProfile(
         key="gpt-4.1-mini-azure",
         name="gpt-4.1-mini",
+        api_kind="azure_openai",
+        context_window=1_000_000,
+        max_output_tokens=32_000,
+        batch_max_files=10,
+        batch_max_chars=180_000,
+        doc_cap_multiplier=2.5,
+        max_workers=6,
+    ),
+    "gpt-4.1-azure": ProviderProfile(
+        key="gpt-4.1-azure",
+        name="gpt-4.1",
         api_kind="azure_openai",
         context_window=1_000_000,
         max_output_tokens=32_000,
@@ -107,7 +116,7 @@ def list_provider_keys() -> list[str]:
     return list(PROFILES.keys())
 
 
-DEFAULT_PROVIDER = "gemini-2.5-flash"
+DEFAULT_PROVIDER = "gpt-4.1-mini-azure"
 
 
 def resolve_provider_key(explicit: str | None = None) -> str:
@@ -115,9 +124,21 @@ def resolve_provider_key(explicit: str | None = None) -> str:
     Risolve la chiave provider effettiva con questa priorità:
     1. argomento esplicito (se non None)
     2. env var V2_PROVIDER
-    3. DEFAULT_PROVIDER (gemini-2.5-flash)
+    3. DEFAULT_PROVIDER (gpt-4.1-mini-azure)
     """
     if explicit:
         return explicit
     raw = os.environ.get("V2_PROVIDER", "").strip()
     return raw or DEFAULT_PROVIDER
+
+
+def resolve_deep_provider_key() -> str | None:
+    """
+    Profilo per le fasi di giudizio (Stage B deep verification, cross-clause,
+    executive summary, chat). Ritorna None se COMPLIANCE_DEEP_PROVIDER non è
+    settato o non è un profilo noto → il chiamante usa il provider standard.
+    """
+    raw = os.environ.get("COMPLIANCE_DEEP_PROVIDER", "").strip()
+    if raw and raw in PROFILES:
+        return raw
+    return None

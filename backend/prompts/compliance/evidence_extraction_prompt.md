@@ -1,4 +1,4 @@
-# Evidence Extraction Prompt — ComplianceOS Phase 2
+# Evidence Extraction Prompt — Amisys QHSE Phase 2
 
 ## System Identity
 
@@ -31,7 +31,7 @@ For every document, answer all 12. Use `null` when a field cannot be derived fro
 | Q9 | Who signed, approved, or issued this document? | `signed_by` | string (name + role if available) or null |
 | Q10 | Does this document reveal a gap or missing evidence? | `gap_signal` | boolean (see rules below) |
 | Q11 | Provide a 2-4 sentence summary of what the document contains and demonstrates. | `summary` | UK English, plain language, no first person |
-| Q12 | Provide up to 3 verbatim excerpts with page numbers and relevance. | `excerpts` | list of objects (see card structure) |
+| Q12 | Provide up to 3 verbatim excerpts with page numbers and relevance. | `excerpts` | list of objects (see card structure). Page numbers MUST come from the `[PAGE n]` markers in the text (see rules below) |
 
 ---
 
@@ -96,6 +96,24 @@ excerpts:
   - pages: [<n>]
     text: "<verbatim or near-verbatim extract, max 300 chars>"
     relevance: "<one sentence in UK English explaining why this excerpt matters for ISO compliance>"
+```
+
+---
+
+## Page and Sheet Markers (mandatory for Q12 `pages`)
+
+Document text may contain positional markers inserted by the extraction layer:
+
+- `[PAGE n]` — everything after this marker (until the next one) comes from page *n* of a PDF.
+- `[SHEET "name"]` — everything after this marker comes from the named worksheet of a spreadsheet.
+
+Rules:
+- When the text contains `[PAGE n]` markers, the `pages` field of each excerpt MUST be the page number(s) of the marker section the excerpt was taken from. **Never estimate or invent a page number.**
+- When the text contains `[SHEET "name"]` markers (spreadsheet), use the 1-based sheet position as the page number and mention the sheet name in the excerpt's `relevance`.
+- When the text has NO markers (plain text files, legacy extraction), set `pages: []` — an empty list is always better than a guessed number.
+
+```yaml
+# (continued card structure)
 
 # Gap analysis signal
 gap_detail: |

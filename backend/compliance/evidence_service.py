@@ -1,5 +1,5 @@
 """
-ComplianceOS — EvidenceService.
+Amisys QHSE — EvidenceService.
 
 Typed retrieval layer over the ChromaDB evidence index. Wraps
 `EvidenceEmbedder` to expose semantically meaningful operations

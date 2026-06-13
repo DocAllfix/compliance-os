@@ -171,6 +171,46 @@ ISO9001_CLAUSES: Dict[str, Dict[str, Any]] = {
             "top management", "leadership", "commitment", "management review",
             "quality policy", "accountability", "resources",
         ],
+        # Sprint R8 — atomic_requirements (Template9001.docx §5.1.1 + ISO 9001
+        # §5.1). Documentation-verifiable items only: interview-based checks
+        # (PRD 1.7.3 — documentation audit) are out of scope by design.
+        "atomic_requirements": [
+            {
+                "id": "9001_5_1.policy_objectives.established",
+                "text": "Top management has established the quality policy and quality objectives, aligned with the strategic direction and the business of the certified products/services.",
+                "verification_hint": "Signed policy + objectives traceable to strategy; coherent themes across policy, objectives and context analysis.",
+                "expected_evidence": ["policy", "objective_plan", "quality_manual"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "9001_5_1.objectives.cascaded",
+                "text": "Objectives are cascaded within the organisation (declined to functions/departments) and their implementation status is verified.",
+                "verification_hint": "Departmental targets, progress reviews, objective status discussed in records (checklist 5.1.1: declinazione + verifica stato di attuazione).",
+                "expected_evidence": ["objective_plan", "record", "management_review"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "9001_5_1.resources.allocated",
+                "text": "Evidence exists that top management ensures the availability of resources for the QMS (budget, people, infrastructure decisions).",
+                "verification_hint": "Resource decisions in management review outputs, investment records, appointments.",
+                "expected_evidence": ["management_review", "record"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "9001_5_1.review.led",
+                "text": "Top management leads the management review and takes accountability for QMS effectiveness (participation documented).",
+                "verification_hint": "MR minutes list top management among attendees; decisions signed off at that level.",
+                "expected_evidence": ["management_review"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "9001_5_1.importance.communicated",
+                "text": "The importance of effective quality management and of conforming to QMS requirements is communicated within the organisation.",
+                "verification_hint": "Communications, inductions, briefings or policy distribution evidence referencing QMS importance.",
+                "expected_evidence": ["communication_record", "training_record"],
+                "risk_if_missing": "MINOR",
+            },
+        ],
         "remediation_template": {
             "what": "Establish documented evidence of top management engagement: signed quality policy, management review minutes, and resource allocation records.",
             "who": "Managing Director / CEO",
@@ -194,6 +234,58 @@ ISO9001_CLAUSES: Dict[str, Dict[str, Any]] = {
         "evidence_keywords": [
             "quality policy", "policy statement", "commitment", "continual improvement",
             "customer focus", "communicated",
+        ],
+        # Sprint R3 — atomic_requirements from audit checklist guidance
+        # (checklistevidence/Template9001.docx §5.2) + ISO 9001:2015 §5.2 text.
+        # These are WORDING checks: the policy must contain the commitments,
+        # not merely exist as a document (promise P4).
+        "atomic_requirements": [
+            {
+                "id": "9001_5_2.policy.documented",
+                "text": "A quality policy exists as documented information, identifiable as the current approved version (signed and/or dated).",
+                "verification_hint": "Policy document or section of the quality manual; approval signature or issue/revision date present.",
+                "expected_evidence": ["policy", "quality_manual"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "9001_5_2.commitment.requirements",
+                "text": "The policy wording contains an explicit commitment to satisfy applicable requirements (customer, statutory and regulatory).",
+                "verification_hint": "Look for the commitment IN THE TEXT itself — phrases equivalent to 'committed to meeting customer and applicable statutory/regulatory requirements'. A policy that only describes the business does not meet this.",
+                "expected_evidence": ["policy"],
+                "risk_if_missing": "MAJOR",
+                # Sprint R7 — deterministic wording check: the evidence quote
+                # must contain ≥1 term from EVERY group (EN+IT variants).
+                "wording_keywords": [["requirement", "requisit"], ["customer", "statutory", "regulatory", "applicable", "client", "cogent"]],
+            },
+            {
+                "id": "9001_5_2.commitment.improvement",
+                "text": "The policy wording contains an explicit commitment to continual improvement of the quality management system.",
+                "verification_hint": "Wording equivalent to 'continual improvement of the QMS' must be present verbatim or near-verbatim in the policy text.",
+                "expected_evidence": ["policy"],
+                "risk_if_missing": "MAJOR",
+                "wording_keywords": [["improv", "migliora", "enhanc", "perfezion", "ottimizz"]],
+            },
+            {
+                "id": "9001_5_2.framework.objectives",
+                "text": "The policy provides a framework for setting quality objectives (objective themes are traceable to policy statements).",
+                "verification_hint": "Cross-check: themes in the policy correspond to documented objectives (6.2) or the policy explicitly references objective setting.",
+                "expected_evidence": ["policy", "objective_plan"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "9001_5_2.context.coherence",
+                "text": "The policy content is appropriate to the organisation's purpose and context — coherent with the context analysis, customer needs, strategy and interested-party requirements, not generic boilerplate.",
+                "verification_hint": "Compare policy themes against the context analysis (4.1/4.2) and the actual products/services; sector-agnostic template text with no organisation-specific content fails this.",
+                "expected_evidence": ["policy", "quality_manual"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "9001_5_2.communicated",
+                "text": "The policy is communicated within the organisation and available to relevant interested parties.",
+                "verification_hint": "Distribution evidence: communication records, intranet/noticeboard reference, website availability, training/induction records mentioning the policy.",
+                "expected_evidence": ["communication_record", "policy", "training_record"],
+                "risk_if_missing": "MINOR",
+            },
         ],
         "remediation_template": {
             "what": "Issue a signed, dated quality policy that includes commitment to customer requirements and continual improvement. Communicate to all staff and make available to interested parties.",
@@ -245,6 +337,53 @@ ISO9001_CLAUSES: Dict[str, Dict[str, Any]] = {
             "risk", "opportunity", "risk register", "risk assessment",
             "mitigation", "preventive action", "risk-based thinking",
         ],
+        # Sprint R3 — atomic_requirements from audit checklist guidance
+        # (Template9001.docx §6.1) + ISO 9001:2015 §6.1. Core of promise P2:
+        # the engine verifies that risk criteria are APPLIED, not just declared.
+        "atomic_requirements": [
+            {
+                "id": "9001_6_1.risks.identified",
+                "text": "Risks AND opportunities are determined, linked to the organisation's context (4.1) and interested-party requirements (4.2).",
+                "verification_hint": "Risk register, FMEA, SWOT-derived register or equivalent; entries reference QMS objectives or context issues. Opportunities must appear, not only threats.",
+                "expected_evidence": ["risk_assessment", "record"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "9001_6_1.methodology.defined",
+                "text": "A method and criteria for analysing and classifying risks are defined (e.g. probability x severity matrix, FMEA scoring, qualitative classes).",
+                "verification_hint": "The document states HOW risks are scored or ranked: scales, thresholds, classification rules.",
+                "expected_evidence": ["risk_assessment", "procedure"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "9001_6_1.criteria.applied",
+                "text": "The declared criteria are actually APPLIED: each risk entry carries the score/class produced by the stated method — the methodology is not merely described.",
+                "verification_hint": "Spot-check register entries: every risk has a value/class consistent with the declared scale. A methodology chapter followed by an unscored risk list fails this item.",
+                "expected_evidence": ["risk_assessment", "record"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "9001_6_1.actions.planned",
+                "text": "Actions to address the identified risks and opportunities are planned, with an owner for each significant entry.",
+                "verification_hint": "Mitigation/exploitation actions column or linked action plan; named role or person responsible.",
+                "expected_evidence": ["risk_assessment", "objective_plan", "record"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "9001_6_1.integration",
+                "text": "The planned actions are integrated into QMS processes and their effectiveness is evaluated (links to operational controls in 8.1 and monitoring in 9.1).",
+                "verification_hint": "Actions reference the affected process/procedure; effectiveness review at management review or in monitoring records.",
+                "expected_evidence": ["risk_assessment", "management_review", "procedure"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "9001_6_1.review.planned",
+                "text": "The risk analysis is kept current: a revision need or review cadence is identified (e.g. reviewed at management review or on significant change).",
+                "verification_hint": "Revision date/history on the register; risk review as a management review input.",
+                "expected_evidence": ["risk_assessment", "management_review"],
+                "risk_if_missing": "MINOR",
+            },
+        ],
         "remediation_template": {
             "what": "Establish a risk and opportunity register linked to QMS processes. Define mitigation actions, assign owners, and review at management review.",
             "who": "Quality Manager",
@@ -268,6 +407,55 @@ ISO9001_CLAUSES: Dict[str, Dict[str, Any]] = {
         "evidence_keywords": [
             "quality objectives", "KPI", "targets", "measurable",
             "action plan", "monitoring", "performance indicators",
+        ],
+        # Sprint R3 — atomic_requirements from audit checklist guidance
+        # (Template9001.docx §6.2.2: "obiettivi concreti e misurabili") + ISO
+        # 9001:2015 §6.2. Core of promise P5: measurable (metric, target,
+        # deadline) vs merely declared. Recognition is label-agnostic:
+        # objectives may be called targets, KPIs, indicators, goals.
+        "atomic_requirements": [
+            {
+                "id": "9001_6_2.objectives.documented",
+                "text": "Quality objectives exist as documented information at relevant functions and levels — regardless of the label used (objectives, targets, KPIs, indicators, goals).",
+                "verification_hint": "Objective plan, KPI sheet, balanced scorecard, strategic plan section, or objectives embedded in the manual / management review.",
+                "expected_evidence": ["objective_plan", "record", "management_review"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "9001_6_2.objectives.measurable",
+                "text": "Each objective is measurable: it carries a metric AND a target value, not only a declared intention ('improve customer satisfaction' without metric/target fails).",
+                "verification_hint": "Per-objective check: is there a number/threshold and a measuring unit or defined indicator? Count how many entries are measurable vs declared-only and name the failures.",
+                "expected_evidence": ["objective_plan", "record"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "9001_6_2.objectives.deadline",
+                "text": "Each objective carries a timescale or deadline for achievement.",
+                "verification_hint": "Date / quarter / 'by end of year' per entry. Objectives with metric and target but no time bound are PARTIAL.",
+                "expected_evidence": ["objective_plan"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "9001_6_2.plan.defined",
+                "text": "Planning to achieve the objectives is defined: what will be done, resources required, who is responsible, and how results will be evaluated.",
+                "verification_hint": "Action plan columns or linked actions: activity, owner, resources, evaluation method.",
+                "expected_evidence": ["objective_plan", "record"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "9001_6_2.coherence",
+                "text": "Objectives are consistent with the quality policy and take account of the risks and opportunities identified in 6.1.",
+                "verification_hint": "Cross-check objective themes against policy commitments and risk register entries (strategies, market analysis, customer and statutory requirements, process and risk analysis).",
+                "expected_evidence": ["objective_plan", "policy", "risk_assessment"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "9001_6_2.monitored",
+                "text": "Objectives are monitored and updated: status reviews exist (KPI dashboards, management review discussion, periodic progress records).",
+                "verification_hint": "Evidence of actual values vs target over time; objectives as a management review input.",
+                "expected_evidence": ["record", "management_review", "objective_plan"],
+                "risk_if_missing": "MINOR",
+            },
         ],
         "remediation_template": {
             "what": "Define SMART quality objectives at relevant functions. Document an action plan with owners, timescales, and measurement criteria.",
@@ -319,6 +507,39 @@ ISO9001_CLAUSES: Dict[str, Dict[str, Any]] = {
             "competence", "training", "training records", "skills",
             "qualifications", "awareness", "personnel", "evaluation",
         ],
+        # Sprint R8 — atomic_requirements (Template9001.docx §7.2 + ISO 9001
+        # §7.2). Key audit insight from the checklist: competence is broader
+        # than training — define requirements per role, then evidence them.
+        "atomic_requirements": [
+            {
+                "id": "9001_7_2.requirements.defined",
+                "text": "Competence requirements are defined per role/activity affecting quality performance — not just generic training plans.",
+                "verification_hint": "Job descriptions, competence matrices or role profiles stating the required knowledge/skills per activity.",
+                "expected_evidence": ["procedure", "record", "training_record"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "9001_7_2.evidence.retained",
+                "text": "Documented evidence of competence is retained (training records, qualifications, certificates, experience records).",
+                "verification_hint": "Training logs, attestati, certificates on file matching the people and roles in scope.",
+                "expected_evidence": ["training_record", "certificate", "record"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "9001_7_2.external.covered",
+                "text": "Competence control covers persons working under the organisation's control who are NOT employees (external workers, outsourcers) where they affect quality.",
+                "verification_hint": "Supplier/contractor competence evidence or contractual competence requirements (checklist 7.2: 'sia interne, sia esterne').",
+                "expected_evidence": ["supplier_document", "training_record", "contract_specification"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "9001_7_2.effectiveness.evaluated",
+                "text": "The effectiveness of actions taken to acquire competence is evaluated (not just attendance recorded).",
+                "verification_hint": "Post-training evaluations, on-the-job verifications, qualification sign-offs.",
+                "expected_evidence": ["training_record", "record"],
+                "risk_if_missing": "MINOR",
+            },
+        ],
         "remediation_template": {
             "what": "Define competence requirements for all roles affecting quality. Update training records and implement a training matrix with competence evaluation.",
             "who": "HR Manager",
@@ -342,6 +563,39 @@ ISO9001_CLAUSES: Dict[str, Dict[str, Any]] = {
         "evidence_keywords": [
             "awareness", "communication", "quality policy", "induction",
             "briefing", "toolbox talk", "staff", "contribution",
+        ],
+        # Sprint R8 — atomic_requirements (Template9001.docx §7.3 + ISO 9001
+        # §7.3). Awareness covers employees AND external persons involved in
+        # the organisation's processes.
+        "atomic_requirements": [
+            {
+                "id": "9001_7_3.policy_objectives.awareness",
+                "text": "Evidence exists that persons doing work under the organisation's control are made aware of the quality policy and the relevant quality objectives.",
+                "verification_hint": "Induction packs, briefings, training content or communications covering policy and objectives.",
+                "expected_evidence": ["training_record", "communication_record"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "9001_7_3.contribution.awareness",
+                "text": "Awareness activities cover each person's contribution to QMS effectiveness and the benefits of improved performance.",
+                "verification_hint": "Induction/briefing content explaining roles' contribution, not only generic policy reading.",
+                "expected_evidence": ["training_record", "communication_record"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "9001_7_3.nc_implications.awareness",
+                "text": "Awareness activities cover the implications of not conforming with QMS requirements.",
+                "verification_hint": "Materials/communications addressing consequences of non-conformity for the organisation and the person's work.",
+                "expected_evidence": ["training_record", "communication_record"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "9001_7_3.external.included",
+                "text": "Awareness extends to non-employee persons involved in the organisation's processes (contractors, outsourcers) where relevant.",
+                "verification_hint": "Contractor induction evidence or contractual awareness requirements (checklist 7.3: 'comprensivo anche di fornitori ed outsourcers').",
+                "expected_evidence": ["communication_record", "supplier_document"],
+                "risk_if_missing": "MINOR",
+            },
         ],
         "remediation_template": {
             "what": "Implement an awareness programme covering the quality policy, QMS objectives, and individual contributions. Record evidence of communication.",
@@ -459,6 +713,39 @@ ISO9001_CLAUSES: Dict[str, Dict[str, Any]] = {
         "evidence_keywords": [
             "operational planning", "process criteria", "work instructions",
             "control", "planned changes", "outsourced processes",
+        ],
+        # Sprint R3 — atomic_requirements (Template9001.docx §8.1 + ISO 9001
+        # §8.1). Chain node for the cross-clause check risk(6.1) → control(8.1)
+        # → monitoring(9.1) — promise P6.
+        "atomic_requirements": [
+            {
+                "id": "9001_8_1.criteria.defined",
+                "text": "Criteria for the operational processes and for the acceptance of products/services are defined.",
+                "verification_hint": "Procedures, work instructions or process sheets stating process parameters and acceptance criteria.",
+                "expected_evidence": ["procedure", "record"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "9001_8_1.risk.linkage",
+                "text": "Operational controls address the risks identified in 6.1: significant risks have a corresponding operational control or procedure.",
+                "verification_hint": "Cross-check the risk register against procedures/work instructions: each significant risk should map to a control. An identified risk with no corresponding control is a broken chain.",
+                "expected_evidence": ["risk_assessment", "procedure"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "9001_8_1.documented.confidence",
+                "text": "Documented information is retained to the extent necessary to have confidence that processes are carried out as planned.",
+                "verification_hint": "Completed records, checklists, logs corresponding to the planned controls.",
+                "expected_evidence": ["record"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "9001_8_1.change.control",
+                "text": "Planned changes are controlled and the consequences of unintended changes are reviewed (change management attention point in audit practice).",
+                "verification_hint": "Change records, revision histories, review of change consequences.",
+                "expected_evidence": ["record", "procedure"],
+                "risk_if_missing": "MINOR",
+            },
         ],
         "remediation_template": {
             "what": "Document operational planning criteria for key processes. Implement controls to ensure processes are carried out as planned and changes are managed.",
@@ -681,6 +968,45 @@ ISO9001_CLAUSES: Dict[str, Dict[str, Any]] = {
             "customer satisfaction", "monitoring", "measurement", "analysis",
             "evaluation", "KPI", "performance data", "survey",
         ],
+        # Sprint R3 — atomic_requirements (Template9001.docx §9.1.1-9.1.3 +
+        # ISO 9001 §9.1). Chain node for risk(6.1) → control(8.1) → monitoring(9.1).
+        "atomic_requirements": [
+            {
+                "id": "9001_9_1.scope.defined",
+                "text": "What needs to be monitored and measured is determined, together with methods and frequencies.",
+                "verification_hint": "Monitoring plan / procedure naming the indicators, the technique and the control frequency for each monitored item.",
+                "expected_evidence": ["procedure", "record", "objective_plan"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "9001_9_1.results.retained",
+                "text": "Documented results of monitoring and measurement are retained as evidence.",
+                "verification_hint": "Filled KPI reports, dashboards, control logs with actual values and dates.",
+                "expected_evidence": ["record"],
+                "risk_if_missing": "MAJOR",
+            },
+            {
+                "id": "9001_9_1.chain.linkage",
+                "text": "Monitoring covers the effectiveness of the actions on risks (6.1) and the progress of the quality objectives (6.2) — not only production metrics.",
+                "verification_hint": "Cross-check: indicators exist for the significant risks' controls and for each objective. A risk action with no monitoring indicator breaks the 6.1→8.1→9.1 chain.",
+                "expected_evidence": ["record", "risk_assessment", "objective_plan"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "9001_9_1.customer.satisfaction",
+                "text": "Customer satisfaction is monitored through direct methods (surveys, post-delivery calls) and/or indirect methods (complaint analysis, returns, repeat-order history, lost tenders).",
+                "verification_hint": "Survey results, complaint statistics, returns analysis, order history reviews.",
+                "expected_evidence": ["record", "communication_record"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "9001_9_1.analysis.performed",
+                "text": "Data from monitoring is analysed and evaluated (trends, conclusions), feeding the management review.",
+                "verification_hint": "Analysis sections, trend charts or commentary on the data; analysis output appears among management review inputs.",
+                "expected_evidence": ["record", "management_review"],
+                "risk_if_missing": "MINOR",
+            },
+        ],
         "remediation_template": {
             "what": "Define monitoring and measurement methods for QMS processes. Implement customer satisfaction measurement. Analyse and evaluate performance data at management review.",
             "who": "Quality Manager",
@@ -847,6 +1173,13 @@ ISO9001_CLAUSES: Dict[str, Dict[str, Any]] = {
                 "id": "9001_9_3.input.suppliers",
                 "text": "Input considered: performance of external providers.",
                 "verification_hint": "Supplier performance summary; critical-supplier review status.",
+                "expected_evidence": ["management_review"],
+                "risk_if_missing": "MINOR",
+            },
+            {
+                "id": "9001_9_3.input.resources",
+                "text": "Input considered: adequacy of resources for maintaining an effective QMS.",
+                "verification_hint": "Minutes show a discussion of resource adequacy (people, equipment, infrastructure) — not merely investment decisions in the outputs.",
                 "expected_evidence": ["management_review"],
                 "risk_if_missing": "MINOR",
             },
