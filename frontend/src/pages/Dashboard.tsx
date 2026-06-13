@@ -151,7 +151,7 @@ export function Dashboard() {
             <div className="eyebrow">{todayLong}</div>
             <h1 className="greeting-title">{greetingFor(user?.display_name)}</h1>
             <p className="greeting-sub">
-              Welcome to ComplianceOS. Start your first analysis to see your compliance posture.
+              Welcome to Amisys QHSE. Start your first analysis to see your compliance posture.
             </p>
           </div>
           <Link className="btn btn-accent" to="/new-analysis">

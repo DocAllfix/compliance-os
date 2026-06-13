@@ -2,7 +2,7 @@
  * Executive Narrative — Phase 4 section §2.
  *
  * Renders the 3-4 paragraph narrative produced by the backend's
- * generate_executive_summary as serif body copy (EB Garamond per DESIGN.md)
+ * generate_executive_summary as Inter body copy (DESIGN.md v2: no serif)
  * at a comfortable reading width. Pure presentation.
  */
 interface Props {

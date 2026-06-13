@@ -89,9 +89,19 @@ export function useChat(scope: ChatScope): UseChatResult {
       setError(null);
 
       try {
-        const reqBody = scope === 'general'
-          ? { query: trimmed, analysis_id: null }
-          : { query: trimmed, analysis_id: scope };
+        // Fase 6 — multi-turn: invia gli ultimi 6 turni completati del thread
+        // (esclusi i placeholder pending e il messaggio appena aggiunto).
+        const thread = store.getThread(activeTid);
+        const history = (thread?.turns ?? [])
+          .filter((t) => !t.pending && !t.error && t.text.trim() && t.id !== userTurn.id && t.id !== placeholderId)
+          .slice(-6)
+          .map((t) => ({ role: t.role, content: t.text }));
+
+        const reqBody = {
+          query: trimmed,
+          analysis_id: scope === 'general' ? null : scope,
+          messages: history,
+        };
         const resp = await compliance.chat(reqBody as Parameters<typeof compliance.chat>[0]);
         store.updateTurn(activeTid, placeholderId, {
           pending: false,

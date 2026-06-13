@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 
 type Theme = 'light' | 'dark';
 
-const STORAGE_KEY = 'complianceos-theme';
+const STORAGE_KEY = 'amisys-theme';
 
 function getInitialTheme(): Theme {
   if (typeof window === 'undefined') return 'light';

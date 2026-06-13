@@ -5,7 +5,11 @@ import { Dashboard } from '@/pages/Dashboard';
 import { NewAnalysis } from '@/pages/NewAnalysis';
 import { Results } from '@/pages/Results';
 import { Plan } from '@/pages/Plan';
+import { Compare } from '@/pages/Compare';
 import { Chat } from '@/pages/Chat';
+import { Documents } from '@/pages/Documents';
+import { Tasks } from '@/pages/Tasks';
+import { Tender } from '@/pages/Tender';
 import { Login } from '@/pages/Login';
 import { useTheme } from '@/lib/theme';
 
@@ -56,10 +60,14 @@ function App() {
       >
         <Route index element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/documents" element={<Documents />} />
+        <Route path="/tasks" element={<Tasks />} />
+        <Route path="/tender" element={<Tender />} />
         <Route path="/new-analysis" element={<NewAnalysis />} />
         <Route path="/analyses" element={<Navigate to="/dashboard" replace />} />
         <Route path="/analyses/:id" element={<Results />} />
         <Route path="/analyses/:id/plan" element={<Plan />} />
+        <Route path="/analyses/:id/compare" element={<Compare />} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Route>
     </Routes>

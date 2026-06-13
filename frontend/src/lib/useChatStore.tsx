@@ -9,7 +9,7 @@
  *                        (chat_grounded.md, sources reali dalle citations)
  *
  * Lo store mantiene `Record<scope, ChatThread[]>` in memoria, sincronizzato
- * a localStorage `complianceos-chat-store-v1`. Sia il drawer (overlay su
+ * a localStorage `amisys-chat-store-v1`. Sia il drawer (overlay su
  * AppShell) sia la pagina full `/chat` leggono/scrivono da qui.
  *
  * Niente DB persistence ancora — è uno sprint backend separato (B0+).
@@ -69,7 +69,7 @@ const ChatStoreContext = createContext<ChatStoreState | null>(null);
 
 // ── Persistenza ──────────────────────────────────────────────────────────
 
-const STORAGE_KEY = 'complianceos-chat-store-v1';
+const STORAGE_KEY = 'amisys-chat-store-v1';
 
 function loadFromStorage(): Record<ChatScope, ChatThread[]> {
   try {

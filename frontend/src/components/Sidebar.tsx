@@ -1,6 +1,7 @@
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useTheme } from '@/lib/theme';
 import { useAuth } from '@/lib/auth';
+import { BrandLogo } from '@/components/BrandLogo';
 
 export function Sidebar() {
   const { toggleTheme } = useTheme();
@@ -21,8 +22,12 @@ export function Sidebar() {
   return (
     <aside className="sidebar">
       <div className="sidebar-brand">
-        <div className="brand-mark">
-          Compliance<span className="accent">OS</span>
+        <div className="brand-lockup">
+          <BrandLogo />
+          <div>
+            <div className="brand-mark">Amisys</div>
+            <div className="brand-suffix">qhse</div>
+          </div>
         </div>
         <button className="theme-toggle" onClick={toggleTheme} aria-label="Toggle theme">
           <svg className="icon icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -46,6 +51,19 @@ export function Sidebar() {
           </svg>
           Dashboard
         </NavLink>
+        <NavLink to="/documents" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
+          <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+            <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+          </svg>
+          Documents
+        </NavLink>
+        <NavLink to="/tasks" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
+          <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+            <path d="M9 11l3 3L22 4" />
+            <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+          </svg>
+          Tasks
+        </NavLink>
         <NavLink to="/new-analysis" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
           <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
             <path d="M14 3v4a1 1 0 0 0 1 1h4" />
@@ -59,6 +77,13 @@ export function Sidebar() {
             <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
           </svg>
           Ask the analyst
+        </NavLink>
+        <NavLink to="/tender" className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
+          <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+            <path d="M9 12h6M9 16h6M9 8h6" />
+            <path d="M5 3h14a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" />
+          </svg>
+          Tender Q&amp;A
         </NavLink>
       </nav>
 
@@ -86,7 +111,7 @@ export function Sidebar() {
         <div className="avatar">{initials}</div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div className="user-name">{user?.display_name || user?.username || 'User'}</div>
-          <div className="user-role">{user?.role || 'auditor'}</div>
+          <div className="user-role">{user?.role || 'member'}</div>
         </div>
         <button
           onClick={handleLogout}

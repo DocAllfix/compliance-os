@@ -1,6 +1,7 @@
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { Sidebar } from './Sidebar';
 import { ChatDrawer } from './ChatDrawer';
+import { NotificationsBell } from './NotificationsBell';
 import { useChatDrawer } from '@/lib/useChatStore';
 
 /**
@@ -32,6 +33,7 @@ export function AppShell() {
     <div className="shell">
       <Sidebar />
       <main className="main">
+        <NotificationsBell />
         <Outlet />
       </main>
       <button className="ask-ai-fab" onClick={handleFabClick}>

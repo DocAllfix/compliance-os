@@ -1,10 +1,10 @@
 /**
- * ComplianceOS API client.
+ * Amisys QHSE API client.
  * Backend: FastAPI at /api (proxied through Vite dev server).
  */
 
 const BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? '';
-const TOKEN_KEY = 'complianceos-auth';
+const TOKEN_KEY = 'amisys-auth';
 
 class ApiError extends Error {
   status: number;
@@ -84,10 +84,23 @@ export interface RemediationPlan {
   who: string;
   when: string;
   effort: 'LOW' | 'MEDIUM' | 'HIGH';
+  // Sprint R4 (PRD 1.4.7) — two-level remediation
+  correction?: string | null;          // immediate fix for the instance
+  corrective_action?: string | null;   // systemic fix preventing recurrence
 }
 
 export type Severity = 'MAJOR' | 'MINOR' | 'OBSERVATION' | 'CONFORMANT';
 export type ActionStatus = 'open' | 'in_progress' | 'closed';
+
+// Sprint R4 — one atomic requirement verified by the deep pass
+export interface RequirementCheck {
+  requirement_id: string;
+  status: 'PRESENT' | 'PARTIAL' | 'ABSENT';
+  evidence_quote?: string | null;
+  pages: number[];
+  file_name?: string | null;
+  note?: string | null;
+}
 
 export interface ClauseGap {
   clause_id: string;
@@ -99,6 +112,31 @@ export interface ClauseGap {
   sources: TraceabilityLink[];
   remediation: RemediationPlan;
   status?: ActionStatus;
+  // Sprint R4 — reasoning exposure (PRD 1.4.6)
+  confidence?: number | null;
+  requirement_checks?: RequirementCheck[];
+  hedged?: boolean;
+  hedge_note?: string | null;
+  deep_verified?: boolean;
+  // Fase 4 — overlay dal registro NC (merge in lettura, PRD 1.4.8)
+  dismissed?: boolean;
+  dismiss_reason?: string | null;
+  nc_id?: number;
+}
+
+// Fase 4 — NC inserita a mano dal manager (PRD 1.4.8)
+export interface ManualNonconformity {
+  id: number;
+  analysis_id: string;
+  clause_id: string | null;
+  source: 'manual';
+  title: string;
+  description: string;
+  severity: Severity | 'OBSERVATION';
+  status: ActionStatus;
+  dismissed: number;          // 0 | 1 (SQLite)
+  dismiss_reason: string;
+  created_by: string;
 }
 
 export interface NormGapReport {
@@ -147,6 +185,67 @@ export interface ExecutiveSummary {
   executive_narrative: string;          // 3-4 paragraphs UK English
 }
 
+// Sprint R3 — Phase 2.6 documented-information coverage
+export interface DocumentedInfoItem {
+  item: string;
+  clause_id: string;
+  norm: string;
+  retain_or_maintain: 'MAINTAIN' | 'RETAIN';
+  status: 'FOUND' | 'FOUND_WEAK' | 'ABSENT';
+  matched_evidence_id?: string | null;
+  matched_file_name?: string | null;
+  match_method: string;
+  risk_if_missing: 'MAJOR' | 'MINOR';
+}
+
+export interface DocumentedInfoReport {
+  items: DocumentedInfoItem[];
+  found_count: number;
+  weak_count: number;
+  absent_count: number;
+}
+
+// Sprint R5 — Phase 3.5 cross-clause coherence
+export interface CrossClauseFinding {
+  chain_id: string;
+  norm: string;
+  title: string;
+  status: 'LINKED' | 'PARTIAL' | 'BROKEN' | 'NOT_ASSESSABLE';
+  narrative: string;
+  clause_ids: string[];
+  sources: TraceabilityLink[];
+}
+
+// Fase A — Phase 2.7 structured risk register (Sprint R8)
+export interface RiskRegisterEntry {
+  ref?: string | null;
+  description: string;
+  category?: string | null;          // 'risk' | 'opportunity' (free text from extraction)
+  score?: string | null;
+  score_present: boolean;
+  mitigation?: string | null;
+  mitigation_present: boolean;
+  owner?: string | null;
+  owner_present: boolean;
+  pages: number[];
+}
+
+export interface RiskRegisterDocument {
+  file_name: string;
+  evidence_id: string;
+  methodology?: string | null;
+  methodology_declared: boolean;
+  risks: RiskRegisterEntry[];
+}
+
+export interface RiskRegisterExtract {
+  documents: RiskRegisterDocument[];
+  total_risks: number;
+  unscored_count: number;
+  unmitigated_count: number;
+  unowned_count: number;
+}
+
 export interface AnalysisResult {
   analysis_id: string;
   company: string;
@@ -157,6 +256,9 @@ export interface AnalysisResult {
   top_gaps: ClauseGap[];
   expiry_report?: ExpiryReport | null;            // Phase 2.5 (backend Sprint 2)
   executive_summary?: ExecutiveSummary | null;    // Phase 4 (backend Sprint 4)
+  documented_info_report?: DocumentedInfoReport | null;  // Phase 2.6 (Sprint R3)
+  cross_clause_findings?: CrossClauseFinding[];          // Phase 3.5 (Sprint R5)
+  risk_register_extract?: RiskRegisterExtract | null;    // Phase 2.7 (Sprint R8)
 }
 
 export interface AnalysisSummary {
@@ -173,6 +275,7 @@ export interface AnalysisSummary {
 
 export interface AnalysisDetail extends AnalysisSummary {
   result?: AnalysisResult;
+  manual_nonconformities?: ManualNonconformity[];  // Fase 4
 }
 
 // ── Sprint 3.3: grounded post-audit chat ───────────────────────────────
@@ -185,30 +288,123 @@ export interface ChatSource {
 }
 
 export interface ChatRequest {
-  analysis_id: string;
+  analysis_id: string | null;        // null → chat general senza grounding
   query: string;
-  conversation_id?: string | null;   // reserved for future multi-turn persistence
+  conversation_id?: string | null;
+  // Fase 6 — multi-turn: ultimi turni (max 6 usati dal backend) come contesto
+  messages?: { role: 'user' | 'assistant'; content: string }[];
 }
 
 export interface ChatResponse {
-  analysis_id: string;
+  analysis_id: string | null;
   response: string;
+  sources: ChatSource[];
+}
+
+// Fase 5 — Delta / Compare
+export interface ClauseDelta {
+  clause_id: string;
+  clause_title: string;
+  score_old: number | null;
+  score_new: number | null;
+  delta: number | null;
+  severity_old: Severity | null;
+  severity_new: Severity | null;
+  severity_changed: boolean;
+  direction: 'improved' | 'regressed' | 'unchanged' | 'new' | 'removed';
+}
+
+export interface NormDelta {
+  norm: string;
+  overall_new: number | null;
+  overall_old: number | null;
+  overall_delta: number | null;
+}
+
+export interface AnalysisDelta {
+  analysis_new: string;
+  analysis_old: string;
+  company: string;
+  date_new: string;
+  date_old: string;
+  norms: NormDelta[];
+  clauses: ClauseDelta[];
+  summary: {
+    improved: number;
+    regressed: number;
+    unchanged: number;
+    new: number;
+    removed: number;
+    severity_upgrades: number;
+    severity_downgrades: number;
+  };
+  documented_info: { resolved: string[]; newly_missing: string[] } | null;
+}
+
+// Fase 7 — criteri operativi custom (PRD 1.4.4b)
+export interface RequirementSet {
+  name: string;
+  label: string;
+  description: string;
+  requirement_count: number;
+}
+
+export interface PqqAnswer {
+  question: string;
+  answer: string;
+  status: 'answered' | 'needs_input';
   sources: ChatSource[];
 }
 
 export const compliance = {
   listAnalyses: () => request<AnalysisSummary[]>('/api/compliance/analyses'),
+  listRequirementSets: () => request<RequirementSet[]>('/api/compliance/requirement-sets'),
+  getDelta: (id: string, against: string) =>
+    request<AnalysisDelta>(`/api/compliance/analyses/${id}/delta?against=${encodeURIComponent(against)}`),
   getAnalysis: (id: string) => request<AnalysisDetail>(`/api/compliance/analyses/${id}`),
   updateAction: (id: string, clauseId: string, status: ActionStatus, notes?: string) =>
     request<{ ok: boolean }>(`/api/compliance/analyses/${id}/actions/${clauseId}`, {
       method: 'PATCH',
       body: JSON.stringify({ status, notes: notes ?? '' }),
     }),
+  // Fase 4 — registro NC (PRD 1.4.8)
+  addManualNC: (id: string, title: string, description: string, severity: string) =>
+    request<{ ok: boolean; nc_id: number }>(`/api/compliance/analyses/${id}/nonconformities`, {
+      method: 'POST',
+      body: JSON.stringify({ title, description, severity }),
+    }),
+  dismissNC: (id: string, ncId: number, reason: string) =>
+    request<{ ok: boolean }>(`/api/compliance/analyses/${id}/nonconformities/${ncId}/dismiss`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    }),
+  restoreNC: (id: string, ncId: number) =>
+    request<{ ok: boolean }>(`/api/compliance/analyses/${id}/nonconformities/${ncId}/restore`, {
+      method: 'POST',
+    }),
   chat: (req: ChatRequest) =>
     request<ChatResponse>('/api/compliance/chat', {
       method: 'POST',
       body: JSON.stringify(req),
     }),
+
+  // Fase H — PQQ/SQ tender assistant
+  pqq: (analysisId: string, questions: string[]) =>
+    request<{ analysis_id: string; answers: PqqAnswer[] }>('/api/compliance/pqq', {
+      method: 'POST',
+      body: JSON.stringify({ analysis_id: analysisId, questions }),
+    }),
+  pqqExport: async (company: string, items: { question: string; answer: string; status: string }[]): Promise<{ blob: Blob; filename: string }> => {
+    const res = await fetch(`${BASE}/api/compliance/pqq/export`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeader() },
+      body: JSON.stringify({ company, items }),
+    });
+    if (!res.ok) throw new ApiError(res.status, res.statusText);
+    const disp = res.headers.get('Content-Disposition') ?? '';
+    const m = disp.match(/filename="?([^"]+)"?/i);
+    return { blob: await res.blob(), filename: m?.[1] ?? 'PQQ_draft.docx' };
+  },
 
   /**
    * Sprint G.3: download report DOCX con auth.
@@ -235,9 +431,208 @@ export const compliance = {
     // Estrai filename dal Content-Disposition se c'è
     const disp = res.headers.get('Content-Disposition') ?? '';
     const m = disp.match(/filename="?([^"]+)"?/i);
-    const filename = m?.[1] ?? `ComplianceOS_Report_${id.slice(0, 12)}.docx`;
+    const filename = m?.[1] ?? `AmisysQHSE_Report_${id.slice(0, 12)}.docx`;
     return { blob, filename };
   },
+};
+
+// ── DMS (Fase C) ──────────────────────────────────────────────────────────
+export interface DmsFolder {
+  id: number;
+  owner: string;
+  parent_id: number | null;
+  name: string;
+  retention_days: number | null;
+  created_at: string;
+}
+
+export interface DmsDocument {
+  id: number;
+  owner: string;
+  folder_id: number | null;
+  filename: string;
+  doc_type: string | null;
+  doc_type_source: 'heuristic' | 'engine' | 'manual';
+  expiry_date: string | null;
+  current_version: number;
+  size: number;
+  content_chars: number;
+  uploaded_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DmsVersion {
+  id: number;
+  document_id: number;
+  version: number;
+  size: number;
+  content_chars: number;
+  uploaded_by: string | null;
+  uploaded_at: string;
+  note: string;
+}
+
+export interface ImportZipResult {
+  ok: boolean;
+  imported: number;
+  versioned: number;
+  skipped: number;
+}
+
+export interface RegisterEntry {
+  id: number;
+  filename: string;
+  doc_type: string | null;
+  tier: string;
+  version: number;
+  expiry_date: string | null;
+  updated_at: string;
+  folder_id: number | null;
+}
+
+export interface PyramidTier {
+  tier: string;
+  count: number;
+  documents: RegisterEntry[];
+}
+
+export interface PyramidResult {
+  tiers: PyramidTier[];
+  empty_tiers: string[];
+  total: number;
+}
+
+export const dms = {
+  listFolders: () => request<{ folders: DmsFolder[] }>('/api/dms/folders'),
+  createFolder: (name: string, parent_id?: number | null, retention_days?: number | null) =>
+    request<{ ok: boolean; folder_id: number }>('/api/dms/folders', {
+      method: 'POST',
+      body: JSON.stringify({ name, parent_id: parent_id ?? null, retention_days: retention_days ?? null }),
+    }),
+  patchFolder: (id: number, body: { name?: string; parent_id?: number | null; retention_days?: number | null; move?: boolean }) =>
+    request<{ ok: boolean }>(`/api/dms/folders/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deleteFolder: (id: number) => request<{ ok: boolean }>(`/api/dms/folders/${id}`, { method: 'DELETE' }),
+
+  listDocuments: (folderId?: number | null) =>
+    request<{ documents: DmsDocument[] }>(
+      folderId != null ? `/api/dms/documents?folder_id=${folderId}` : '/api/dms/documents',
+    ),
+  getDocument: (id: number) =>
+    request<{ document: DmsDocument; versions: DmsVersion[] }>(`/api/dms/documents/${id}`),
+  patchDocument: (id: number, body: { doc_type?: string; expiry_date?: string; folder_id?: number; filename?: string; move?: boolean }) =>
+    request<{ ok: boolean }>(`/api/dms/documents/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deleteDocument: (id: number) => request<{ ok: boolean }>(`/api/dms/documents/${id}`, { method: 'DELETE' }),
+  restoreDocument: (id: number) =>
+    request<{ ok: boolean }>(`/api/dms/documents/${id}/restore`, { method: 'POST' }),
+  search: (q: string) => request<{ documents: DmsDocument[] }>(`/api/dms/search?q=${encodeURIComponent(q)}`),
+
+  register: () => request<{ register: RegisterEntry[] }>('/api/dms/register'),
+  pyramid: () => request<PyramidResult>('/api/dms/pyramid'),
+  exportRegister: async (): Promise<{ blob: Blob; filename: string }> => {
+    const res = await fetch(`${BASE}/api/dms/register/export`, { headers: { ...authHeader() } });
+    if (!res.ok) throw new ApiError(res.status, res.statusText);
+    return { blob: await res.blob(), filename: 'document_register.xlsx' };
+  },
+
+  upload: async (file: File, folderId?: number | null): Promise<{ ok: boolean; document_id: number; version: number; deduped: boolean }> => {
+    const form = new FormData();
+    form.append('file', file);
+    if (folderId != null) form.append('folder_id', String(folderId));
+    const res = await fetch(`${BASE}/api/dms/documents`, { method: 'POST', headers: { ...authHeader() }, body: form });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new ApiError(res.status, (data as { detail?: string }).detail ?? res.statusText, data);
+    }
+    return res.json();
+  },
+
+  importZip: async (file: File, folderId?: number | null): Promise<ImportZipResult> => {
+    const form = new FormData();
+    form.append('file', file);
+    if (folderId != null) form.append('folder_id', String(folderId));
+    const res = await fetch(`${BASE}/api/dms/import-zip`, { method: 'POST', headers: { ...authHeader() }, body: form });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new ApiError(res.status, (data as { detail?: string }).detail ?? res.statusText, data);
+    }
+    return res.json();
+  },
+
+  download: async (id: number, version?: number): Promise<{ blob: Blob; filename: string }> => {
+    const url = version != null
+      ? `${BASE}/api/dms/documents/${id}/download?version=${version}`
+      : `${BASE}/api/dms/documents/${id}/download`;
+    const res = await fetch(url, { headers: { ...authHeader() } });
+    if (!res.ok) {
+      throw new ApiError(res.status, res.statusText);
+    }
+    const blob = await res.blob();
+    const disp = res.headers.get('Content-Disposition') ?? '';
+    const m = disp.match(/filename="?([^"]+)"?/i);
+    return { blob, filename: m?.[1] ?? `document_${id}` };
+  },
+};
+
+// ── Tasks (Fase F) ──────────────────────────────────────────────────────────
+export type Rag = 'red' | 'amber' | 'green' | 'done' | 'snoozed';
+
+export interface Task {
+  task_key: string;
+  source: 'nonconformity' | 'expiry' | 'manual';
+  title: string;
+  severity: string | null;
+  due_date: string | null;
+  link: string;
+  rag: Rag;
+  done: boolean;
+  snoozed_until: string | null;
+  analysis_id?: string;
+  clause_id?: string;
+}
+
+export const tasks = {
+  list: () => request<{ tasks: Task[]; counts: Record<string, number> }>('/api/tasks'),
+  setDone: (taskKey: string, done: boolean) =>
+    request<{ ok: boolean }>(`/api/tasks/${encodeURIComponent(taskKey)}/done`, {
+      method: 'POST', body: JSON.stringify({ done }),
+    }),
+  snooze: (taskKey: string, until: string) =>
+    request<{ ok: boolean }>(`/api/tasks/${encodeURIComponent(taskKey)}/snooze`, {
+      method: 'POST', body: JSON.stringify({ until }),
+    }),
+  addManual: (title: string, due_date?: string | null) =>
+    request<{ ok: boolean; task_id: number }>('/api/tasks', {
+      method: 'POST', body: JSON.stringify({ title, due_date: due_date ?? null }),
+    }),
+  deleteManual: (taskId: number) =>
+    request<{ ok: boolean }>(`/api/tasks/manual/${taskId}`, { method: 'DELETE' }),
+};
+
+// ── Notifications (Fase E) ──────────────────────────────────────────────────
+export interface AppNotification {
+  id: number;
+  username: string;
+  kind: string;
+  severity: string | null;
+  title: string;
+  body: string | null;
+  link: string | null;
+  entity_ref: string | null;
+  created_at: string;
+  read_at: string | null;
+}
+
+export const notifications = {
+  list: (unreadOnly = false) =>
+    request<{ notifications: AppNotification[]; unread: number }>(
+      `/api/notifications?unread_only=${unreadOnly}`,
+    ),
+  unreadCount: () => request<{ unread: number }>('/api/notifications/unread-count'),
+  markRead: (id: number) =>
+    request<{ ok: boolean; unread: number }>(`/api/notifications/${id}/read`, { method: 'POST' }),
+  markAllRead: () =>
+    request<{ ok: boolean; marked: number }>('/api/notifications/read-all', { method: 'POST' }),
 };
 
 /**
@@ -294,6 +689,55 @@ export async function runAnalysis(
     headers: { ...authHeader() },
     body: form,
   });
+  await readSseStream(res, onEvent);
+}
+
+/**
+ * Re-run the pipeline on the saved corpus of an existing analysis.
+ * Backend: POST /api/compliance/analyses/{id}/reanalyse (SSE response).
+ * Produces a NEW analysis row — the done event carries the new analysis_id.
+ */
+export async function runReanalyse(
+  analysisId: string,
+  onEvent: (ev: SseEvent) => void,
+): Promise<void> {
+  const res = await fetch(`${BASE}/api/compliance/analyses/${encodeURIComponent(analysisId)}/reanalyse`, {
+    method: 'POST',
+    headers: { ...authHeader() },
+  });
+  await readSseStream(res, onEvent);
+}
+
+export interface AnalyzeDmsRequest {
+  company_name: string;
+  sector: string;
+  employee_range: string;
+  certified: string;
+  sites_count: string;
+  norms: string[];
+  scope: 'all' | 'folder' | 'updated_since';
+  folder_id?: number | null;
+  updated_since?: string | null;
+}
+
+/**
+ * Run the pipeline on documents already in the DMS (PRD §1.4.3 scan scoping).
+ * Backend: POST /api/compliance/analyze-dms (JSON body, SSE response).
+ */
+export async function runAnalyzeDms(
+  req: AnalyzeDmsRequest,
+  onEvent: (ev: SseEvent) => void,
+): Promise<void> {
+  const res = await fetch(`${BASE}/api/compliance/analyze-dms`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeader() },
+    body: JSON.stringify(req),
+  });
+  await readSseStream(res, onEvent);
+}
+
+/** Shared SSE frame reader (fetch body → parsed events). */
+async function readSseStream(res: Response, onEvent: (ev: SseEvent) => void): Promise<void> {
   if (!res.ok || !res.body) {
     const data = await res.json().catch(() => ({}));
     throw new ApiError(res.status, (data as { detail?: string }).detail ?? res.statusText, data);

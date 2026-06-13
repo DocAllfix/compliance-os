@@ -1,16 +1,21 @@
-import { useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { useMemo, useState } from 'react';
+import { Link, useNavigate, useParams } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { useAnalysis } from '@/lib/hooks';
-import { compliance, triggerBrowserDownload, ApiError } from '@/lib/api';
-import type { ClauseGap, RemediationPlan, TraceabilityLink } from '@/lib/api';
+import { compliance, runReanalyse, triggerBrowserDownload, ApiError } from '@/lib/api';
+import type { ClauseGap, RemediationPlan, RequirementCheck, SseEvent, TraceabilityLink } from '@/lib/api';
 import { useChatDrawer } from '@/lib/useChatStore';
 import { CompanySnapshotCard } from '@/pages/results/CompanySnapshotCard';
 import { ExecutiveNarrative } from '@/pages/results/ExecutiveNarrative';
 import { ExpiryTable } from '@/pages/results/ExpiryTable';
 import { PriorityIntegrationsList } from '@/pages/results/PriorityIntegrationsList';
+import { DocumentedInfoSection } from '@/pages/results/DocumentedInfoSection';
+import { CrossClauseSection } from '@/pages/results/CrossClauseSection';
+import { RiskRegisterSection } from '@/pages/results/RiskRegisterSection';
 
 // Sprint G.1: Finding interface estesa con i dati REALI di ClauseGap
 // (excerpt, pages, remediation). Niente più stub statico nell'expand.
+// Sprint R6: requirement checks, confidence, hedging, dual remediation.
 interface Finding {
   clauseId: string;        // human-readable, es. "45001 §10.2"
   title: string;
@@ -19,6 +24,11 @@ interface Finding {
   text: string;            // il "finding" del ClauseGap (max ~150 parole)
   sources: TraceabilityLink[];  // tutte le sources, non solo la prima
   remediation: RemediationPlan;
+  confidence?: number | null;
+  requirementChecks: RequirementCheck[];
+  hedged: boolean;
+  hedgeNote?: string | null;
+  deepVerified: boolean;
 }
 
 function mapClause(c: ClauseGap): Finding {
@@ -28,8 +38,9 @@ function mapClause(c: ClauseGap): Finding {
     : c.severity === 'CONFORMANT' ? 'conf'
     : 'obs';
   return {
-    clauseId: c.clause_id.replace(/^(\d+)_(\d+)(?:_(\d+))?$/i, (_m, std, sec, sub) =>
-      sub ? `${std} §${sec}.${sub}` : `${std} §${sec}`,
+    // Sprint R6: handle 2-4 segment ids ("14001_6_1_2" → "14001 §6.1.2")
+    clauseId: c.clause_id.replace(/^(\d+)_(\d+)(?:_(\d+))?(?:_(\d+))?$/i, (_m, std, a, b, cc) =>
+      `${std} §${[a, b, cc].filter(Boolean).join('.')}`,
     ),
     title: c.clause_title,
     severity: sev,
@@ -37,6 +48,11 @@ function mapClause(c: ClauseGap): Finding {
     text: c.finding,
     sources: c.sources ?? [],
     remediation: c.remediation,
+    confidence: c.confidence,
+    requirementChecks: c.requirement_checks ?? [],
+    hedged: c.hedged ?? false,
+    hedgeNote: c.hedge_note,
+    deepVerified: c.deep_verified ?? false,
   };
 }
 
@@ -78,6 +94,19 @@ function effortLabel(effort: RemediationPlan['effort']): string {
   return 'Low';
 }
 
+function checkStatusBadge(status: RequirementCheck['status']) {
+  // Severity-semantic colours only: PRESENT=conformant, PARTIAL=minor, ABSENT=major
+  if (status === 'PRESENT') return <span className="badge badge-conf">Present</span>;
+  if (status === 'PARTIAL') return <span className="badge badge-minor">Partial</span>;
+  return <span className="badge badge-major">Absent</span>;
+}
+
+function requirementLabel(id: string): string {
+  // "9001_9_3.inputs.complete" → "inputs complete"
+  const tail = id.split('.').slice(1).join(' · ');
+  return tail.replace(/_/g, ' ') || id;
+}
+
 function FindingCard({ f, defaultExpanded = false }: { f: Finding; defaultExpanded?: boolean }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   const firstSource = f.sources[0];
@@ -100,9 +129,24 @@ function FindingCard({ f, defaultExpanded = false }: { f: Finding; defaultExpand
           </span>
         )}
         <span className="finding-clause-id" style={{ marginLeft: 'auto' }}>{f.clauseId}</span>
+        {f.confidence != null && (
+          <span
+            title={f.deepVerified
+              ? 'Verdict confidence — this clause was verified against the full document text'
+              : 'Verdict confidence from the screening pass'}
+            style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-tertiary)' }}
+          >
+            {f.deepVerified ? '✓ ' : ''}conf. {Math.round(f.confidence * 100)}%
+          </span>
+        )}
       </div>
       <h2 className="finding-title">{f.title}</h2>
       <p className="finding-text">{f.text}</p>
+      {f.hedged && f.hedgeNote && (
+        <p style={{ fontSize: 12.5, fontStyle: 'italic', color: 'var(--text-tertiary)', margin: '4px 0 0' }}>
+          Note of caution: {f.hedgeNote}
+        </p>
+      )}
       {firstSource && (
         <span className="finding-source">
           <FileIcon />
@@ -117,6 +161,58 @@ function FindingCard({ f, defaultExpanded = false }: { f: Finding; defaultExpand
       </button>
       {expanded && (
         <div className="finding-detail">
+          {/* Sprint R6: per-requirement verification checklist from the deep
+              pass — PRESENT/PARTIAL/ABSENT with verbatim quote and page. */}
+          {f.requirementChecks.length > 0 && (
+            <div style={{ marginBottom: 16 }}>
+              <div className="remediation-header" style={{ marginBottom: 8 }}>
+                <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M9 11l3 3L22 4" /><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+                </svg>
+                Requirement verification
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {f.requirementChecks.map((chk) => (
+                  <div
+                    key={chk.requirement_id}
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: '90px 1fr',
+                      gap: 10,
+                      alignItems: 'start',
+                      fontSize: 12.5,
+                    }}
+                  >
+                    <div>{checkStatusBadge(chk.status)}</div>
+                    <div>
+                      <span style={{ fontWeight: 600 }}>{requirementLabel(chk.requirement_id)}</span>
+                      {chk.note && (
+                        <span style={{ color: 'var(--text-secondary)' }}> — {chk.note}</span>
+                      )}
+                      {chk.evidence_quote && (
+                        <div
+                          style={{
+                            marginTop: 3,
+                            fontFamily: 'var(--font-serif)',
+                            fontStyle: 'italic',
+                            color: 'var(--text-secondary)',
+                          }}
+                        >
+                          “{chk.evidence_quote}”
+                          {chk.file_name && (
+                            <span style={{ fontFamily: 'var(--font-mono)', fontStyle: 'normal', fontSize: 11, color: 'var(--text-tertiary)' }}>
+                              {' '}[{lastPathSegment(chk.file_name)}{chk.pages.length > 0 ? `, p.${chk.pages.join(', ')}` : ''}]
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Sprint G.1: excerpts REALI dalle sources del backend.
               Nessuna stub italiana hard-coded. Se non ci sono sources, la
               sezione excerpt viene omessa e mostriamo solo la remediation. */}
@@ -173,8 +269,30 @@ function FindingCard({ f, defaultExpanded = false }: { f: Finding; defaultExpand
               Remediation plan
             </div>
             <div className="rem-grid">
-              <div className="rem-label">Action</div>
-              <div className="rem-value">{f.remediation.what}</div>
+              {/* Sprint R6 (PRD 1.4.7): correction = immediate fix,
+                  corrective action = systemic fix. Falls back to the single
+                  "Action" row for analyses that predate the deep pass. */}
+              {f.remediation.correction || f.remediation.corrective_action ? (
+                <>
+                  {f.remediation.correction && (
+                    <>
+                      <div className="rem-label">Correction</div>
+                      <div className="rem-value">{f.remediation.correction}</div>
+                    </>
+                  )}
+                  {f.remediation.corrective_action && (
+                    <>
+                      <div className="rem-label">Corrective action</div>
+                      <div className="rem-value">{f.remediation.corrective_action}</div>
+                    </>
+                  )}
+                </>
+              ) : (
+                <>
+                  <div className="rem-label">Action</div>
+                  <div className="rem-value">{f.remediation.what}</div>
+                </>
+              )}
               <div className="rem-label">Owner</div>
               <div className="rem-value"><b>{f.remediation.who}</b></div>
               <div className="rem-label">Timescale</div>
@@ -262,6 +380,62 @@ function DownloadReportButton({ analysisId }: { analysisId: string }) {
 }
 
 
+/**
+ * Fase A — Re-analyse: re-runs the pipeline on the saved corpus of this
+ * analysis (no re-upload). Streams SSE progress inline on the button label,
+ * then navigates to the freshly created analysis so Compare has material.
+ */
+function ReanalyseButton({ analysisId }: { analysisId: string }) {
+  const [state, setState] = useState<'idle' | 'running' | 'error'>('idle');
+  const [pct, setPct] = useState(0);
+  const [errMsg, setErrMsg] = useState<string | null>(null);
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+
+  const handleClick = async () => {
+    if (state === 'running') return;
+    if (!window.confirm('Re-analyse this documentation set? This runs the full analysis again on the stored documents and creates a new result you can compare against this one.')) return;
+    setState('running');
+    setErrMsg(null);
+    setPct(0);
+    try {
+      let newId: string | null = null;
+      await runReanalyse(analysisId, (ev: SseEvent) => {
+        if ('pct' in ev) setPct(Math.round(ev.pct));
+        if ('done' in ev && ev.done) newId = ev.analysis_id;
+        if ('error' in ev) throw new Error(ev.error);
+      });
+      if (newId) {
+        await queryClient.invalidateQueries({ queryKey: ['analyses'] });
+        navigate(`/analyses/${newId}/compare?against=${analysisId}`);
+      } else {
+        throw new Error('The analysis did not complete.');
+      }
+    } catch (e) {
+      const msg = e instanceof ApiError ? `${e.status} ${e.message}` : (e as Error).message;
+      setErrMsg(msg);
+      setState('error');
+      window.setTimeout(() => setState('idle'), 4000);
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      className={`btn btn-link${state === 'error' ? ' btn-error' : ''}`}
+      title={state === 'error' ? errMsg ?? 'Re-analyse failed' : 'Run the analysis again on the stored documents'}
+      disabled={state === 'running'}
+    >
+      <svg className="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+        <polyline points="21 3 21 9 15 9" />
+      </svg>
+      {state === 'running' ? `Re-analysing… ${pct}%` : state === 'error' ? 'Re-analyse failed' : 'Re-analyse'}
+    </button>
+  );
+}
+
 function EmptyState() {
   return (
     <div className="main-inner">
@@ -296,6 +470,16 @@ export function Results() {
   const isDemo = !id || id === 'demo';
   const analysisQuery = useAnalysis(isDemo ? undefined : id);
   const result = analysisQuery.data?.result;
+  // Sprint R6 — severity filter state (hooks must precede the early returns)
+  const [severityFilter, setSeverityFilter] = useState<'all' | 'major' | 'minor' | 'obs'>('all');
+  const findings: Finding[] = useMemo(
+    () => (result ? result.norms.flatMap((n) => n.clauses).map(mapClause) : []),
+    [result],
+  );
+  const visibleFindings = useMemo(
+    () => (severityFilter === 'all' ? findings : findings.filter((f) => f.severity === severityFilter)),
+    [findings, severityFilter],
+  );
 
   if (analysisQuery.isLoading && !isDemo) {
     return (
@@ -321,7 +505,6 @@ export function Results() {
   });
 
   const norms = result.norms;
-  const findings: Finding[] = result.norms.flatMap((n) => n.clauses).map(mapClause);
 
   const totals = result.norms.reduce(
     (acc, n) => ({
@@ -372,6 +555,7 @@ export function Results() {
           </div>
           <div className="header-actions">
             <AskAnalystButton analysisId={id!} />
+            <ReanalyseButton analysisId={id!} />
             <DownloadReportButton analysisId={id!} />
           </div>
         </div>
@@ -391,7 +575,7 @@ export function Results() {
             {totals.major === 1 ? 'One' : `${totals.major}`} <span className="num major">{totals.major === 1 ? 'major finding' : 'major findings'}</span> need addressing.
             {totals.spof > 0 && (
               <>
-                {' '}One is a <span className="num spof">single point of failure</span>.
+                {' '}{totals.spof === 1 ? 'One is a' : `${totals.spof} are`} <span className="num spof">{totals.spof === 1 ? 'single point of failure' : 'single points of failure'}</span>.
               </>
             )}
           </>
@@ -403,23 +587,49 @@ export function Results() {
       <nav className="tabs">
         <a className="tab active" href="#findings">Findings <span className="tab-count">{findings.length}</span></a>
         <Link className="tab" to={`/analyses/${id}/plan`}>Plan <span className="tab-count">{totals.major + totals.minor} open</span></Link>
-        <span className="tab tab-disabled" title="Available once a second analysis exists">Compare</span>
+        <Link className="tab" to={`/analyses/${id}/compare`}>Compare</Link>
       </nav>
 
       {hasExpiry && <ExpiryTable report={result.expiry_report!} />}
+      {result.documented_info_report && (
+        <DocumentedInfoSection report={result.documented_info_report} />
+      )}
+      {(result.cross_clause_findings?.length ?? 0) > 0 && (
+        <CrossClauseSection findings={result.cross_clause_findings!} />
+      )}
+      {result.risk_register_extract && result.risk_register_extract.total_risks > 0 && (
+        <RiskRegisterSection register={result.risk_register_extract} />
+      )}
       {hasIntegrations && (
         <PriorityIntegrationsList items={result.executive_summary!.top_priority_integrations} />
       )}
 
       <div id="findings" className="section-break">
         <div className="section-title">
-          By severity<span className="count">{findings.length} total</span>
+          By severity<span className="count">{visibleFindings.length} of {findings.length}</span>
         </div>
         <div className="filter-group">
-          <button className="filter-chip active">All</button>
-          <button className="filter-chip"><span className="dot major"></span>Major <span style={{ color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)', fontSize: 11, marginLeft: 3 }}>{totals.major}</span></button>
-          <button className="filter-chip"><span className="dot minor"></span>Minor <span style={{ color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)', fontSize: 11, marginLeft: 3 }}>{totals.minor}</span></button>
-          <button className="filter-chip"><span className="dot obs"></span>Obs. <span style={{ color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)', fontSize: 11, marginLeft: 3 }}>{totals.obs}</span></button>
+          {/* Sprint R6: filters are live (previously decorative) */}
+          <button
+            className={`filter-chip${severityFilter === 'all' ? ' active' : ''}`}
+            onClick={() => setSeverityFilter('all')}
+            type="button"
+          >All</button>
+          <button
+            className={`filter-chip${severityFilter === 'major' ? ' active' : ''}`}
+            onClick={() => setSeverityFilter('major')}
+            type="button"
+          ><span className="dot major"></span>Major <span style={{ color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)', fontSize: 11, marginLeft: 3 }}>{totals.major}</span></button>
+          <button
+            className={`filter-chip${severityFilter === 'minor' ? ' active' : ''}`}
+            onClick={() => setSeverityFilter('minor')}
+            type="button"
+          ><span className="dot minor"></span>Minor <span style={{ color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)', fontSize: 11, marginLeft: 3 }}>{totals.minor}</span></button>
+          <button
+            className={`filter-chip${severityFilter === 'obs' ? ' active' : ''}`}
+            onClick={() => setSeverityFilter('obs')}
+            type="button"
+          ><span className="dot obs"></span>Obs. <span style={{ color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)', fontSize: 11, marginLeft: 3 }}>{totals.obs}</span></button>
         </div>
       </div>
 
@@ -427,8 +637,14 @@ export function Results() {
         <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-tertiary)', fontSize: 13 }}>Loading analysis…</div>
       )}
 
-      {findings.map((f, i) => (
-        <FindingCard key={f.clauseId} f={f} defaultExpanded={i === 0} />
+      {visibleFindings.length === 0 && (
+        <div style={{ padding: 32, textAlign: 'center', color: 'var(--text-tertiary)', fontSize: 13 }}>
+          No findings match this filter.
+        </div>
+      )}
+
+      {visibleFindings.map((f, i) => (
+        <FindingCard key={f.clauseId} f={f} defaultExpanded={i === 0 && severityFilter === 'all'} />
       ))}
     </div>
   );

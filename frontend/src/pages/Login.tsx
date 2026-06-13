@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/lib/auth';
 import { useTheme } from '@/lib/theme';
 import { ApiError } from '@/lib/api';
+import { BrandLogo } from '@/components/BrandLogo';
 
 export function Login() {
   const { login } = useAuth();
@@ -40,41 +41,63 @@ export function Login() {
         position: 'relative',
       }}
     >
-      {/* Left: editorial half */}
+      {/* Left: brand panel (navy, mirrors the Amisys identity lockup) */}
       <aside
         style={{
-          background: 'var(--bg-elevated)',
+          background: 'var(--brand-navy)',
           padding: '64px 56px',
           display: 'flex',
           flexDirection: 'column',
           justifyContent: 'space-between',
-          borderRight: '1px solid var(--border-subtle)',
         }}
       >
-        <div>
-          <div className="brand-mark" style={{ fontSize: 24 }}>
-            Compliance<span className="accent">OS</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <BrandLogo size={38} />
+          <div>
+            <div
+              style={{
+                fontFamily: 'var(--font-display)',
+                fontSize: 26,
+                fontWeight: 600,
+                color: 'var(--on-navy)',
+                lineHeight: 1,
+              }}
+            >
+              Amisys
+            </div>
+            <div
+              style={{
+                fontFamily: 'var(--font-display)',
+                fontSize: 12,
+                fontWeight: 500,
+                letterSpacing: '0.12em',
+                color: 'var(--on-navy-muted)',
+                marginTop: 4,
+              }}
+            >
+              qhse
+            </div>
           </div>
         </div>
 
         <div style={{ maxWidth: '40ch' }}>
           <p
             style={{
-              fontFamily: 'var(--font-serif)',
-              fontStyle: 'italic',
+              fontFamily: 'var(--font-display)',
               fontSize: 22,
+              fontWeight: 500,
               lineHeight: 1.45,
-              color: 'var(--text-primary)',
+              color: 'var(--on-navy)',
               marginBottom: 16,
             }}
           >
-            "Read your documents the way an auditor would, then tell you what's missing in plain English."
+            "Read your documents the way an assessor would, then tell you what's missing in plain English."
           </p>
           <p
             style={{
               fontFamily: 'var(--font-sans)',
               fontSize: 13,
-              color: 'var(--text-tertiary)',
+              color: 'var(--on-navy-muted)',
               letterSpacing: '0.02em',
             }}
           >
@@ -85,11 +108,11 @@ export function Login() {
         <div
           style={{
             fontSize: 11,
-            color: 'var(--text-tertiary)',
+            color: 'var(--on-navy-muted)',
             fontFamily: 'var(--font-mono)',
           }}
         >
-          ComplianceOS v0.1 — Five Rise Consultancy
+          Amisys QHSE v0.1 · Five Rise Consultancy
         </div>
       </aside>
 
