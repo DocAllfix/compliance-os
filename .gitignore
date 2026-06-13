@@ -20,6 +20,9 @@ backend/data/*.db
 backend/data/*.db-journal
 backend/data/*.db-shm
 backend/data/*.db-wal
+backend/*.db
+backend/_test_evidence_raw.txt
+backend/data/corpus/
 
 # --- Binari / output (non committare) ---
 *.zip
@@ -80,3 +83,25 @@ testlocalresults/
 *.bak
 *.backup
 *_backup.*
+
+# --- Local tooling / sessioni Claude (NON necessari a build o runtime) ---
+.claude/
+.agents/
+.mcp.json
+skills-lock.json
+
+# --- Artefatti design exploration (NON necessari a runtime) ---
+mocks/
+design-system/
+
+# --- DMS binary store (dati runtime, mai nel repo) ---
+backend/data/dms/
+
+# --- Documenti business / draft interni (restano locali, fuori dal repo) ---
+/*Cost-Profile*.md
+/*Brochure*.md
+/*Reply to Fred*.md
+/*Technical Blueprint*.md
+/*System Economics*.md
+/DESIGN BRIEF*.md
+docs/

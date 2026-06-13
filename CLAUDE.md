@@ -1,8 +1,10 @@
-# ComplianceOS — Istruzioni per Claude
+# Amisys QHSE — Istruzioni per Claude
 
 ## Identità progetto
 
-ComplianceOS è un prodotto **advisory** per **compliance manager** d'azienda che vogliono valutare in autonomia la conformità della propria documentazione agli standard ISO. Cliente di riferimento: Five Rise Consultancy (UK).
+**Amisys QHSE** (ex ComplianceOS — rebrand 2026-06-13 sul branding del partner) è un prodotto **advisory** per **compliance manager** d'azienda che vogliono valutare in autonomia la conformità della propria documentazione agli standard ISO. Cliente di riferimento: Five Rise Consultancy (UK).
+
+**Brand**: navy `#1B2944` (chrome/sidebar) + arancio `#F2A33C` (logo "A" a nodi, accent) + Quicksand (display/headings) + Inter (body). Chrome navy costante nei due temi; contenuto chiaro di default, dark mode navy-tinted. Spec completa in DESIGN.md v2.
 
 Norme supportate (MVP): ISO 9001:2015, ISO 14001:2015, ISO 45001:2018.
 
@@ -15,10 +17,14 @@ Norme supportate (MVP): ISO 9001:2015, ISO 14001:2015, ISO 45001:2018.
 
 ## Stack
 
-- **Backend**: Python 3.11/3.12 + FastAPI + Uvicorn + ChromaDB embedded + Azure OpenAI GPT-4.1-mini (primario, Foundry v1) + Gemini 2.5 Flash (fallback automatico su 429) + Azure Document Intelligence (OCR PDF scansionati, `prebuilt-read`)
+- **Backend**: Python 3.11/3.12 + FastAPI + Uvicorn + ChromaDB embedded + Azure OpenAI dual-model (GPT-4.1-mini standard + GPT-4.1 full "deep", France Central Data Zone EU) + Azure Document Intelligence (OCR PDF scansionati, `prebuilt-read`, per-pagina sui misti)
 - **Frontend**: Vite + React 19 + TypeScript + **CSS vanilla con tokens OKLCH** (DESIGN.md è la spec) + TanStack Query + react-router 7
-- **Persistence**: SQLite (`compliance.db`), tabelle `compliance_analyses`, `ncr_actions`, `compliance_chat`
-- **Streaming**: SSE via FastAPI `StreamingResponse` (pipeline ZIP → analisi) + frontend `fetch` reader manuale (auth Bearer header, no EventSource)
+- **Persistence**: SQLite WAL (`backend/data/audit.db` — NON "compliance.db"). Tabelle compliance: `compliance_analyses` (incl. `evidence_yaml`), `nonconformities` (registro NC), `analysis_documents` (indice corpus + provenance DMS `dms_document_id`/`dms_version`; testi in `backend/data/corpus/{analysis_id}/`), `compliance_chat`, `audit_log` (append-only). Tabelle piattaforma (Fase C-F): `dms_folders`/`dms_documents`/`dms_document_versions` (binari in `backend/data/dms/{owner}/{doc_id}/v{n}/`), `notifications` + `scheduler_state`, `tasks` + `task_state`.
+- **API surface**: `/api/health`, `/api/auth/*`, `/api/compliance/*` (analyze SSE, **analyze-dms** SSE scope-based, analyses, detail, download DOCX, delta, reanalyse, requirement-sets, chat, **pqq**+export, actions, nonconformities), `/api/dms/*` (folders/documents/versions/import-zip/register/pyramid), `/api/notifications/*`, `/api/tasks/*`, `/api/audit-log` (admin). Helper auth+ownership in `backend/api_deps.py` (`_require_analysis_access`/`_require_folder_access`/`_require_document_access`, admin bypass); router modulari in `backend/routers/{dms,notifications,tasks}.py`; ogni mutazione passa da `_audit()`.
+- **DMS ingest primario** (Fase C-D): i documenti vivono nel DMS; l'analisi parte da uno scope (all/folder/updated_since) → `documents_override` → pipeline (Phase 1 saltata). doc_type euristico all'upload (`doc_classifier.py`, mai LLM sul CRUD) → backfill autorevole dalle evidence card post-analisi (`doc_type_source` heuristic→engine→manual; il manuale vince). Phase 1 estrazione condivisa in `compliance/extraction.py` (riusata da pipeline ZIP e upload DMS).
+- **Scheduler** (Fase E): task asyncio nel lifespan FastAPI (`backend/scheduler.py`, `install_scheduler`), off di default (`SCHEDULER_ENABLED=1` per accendere). Job giornalieri idempotenti: notifiche scadenze (-60/-30/-7/0g) + retention sweep. Notifiche in-app only (campanella header).
+- **Tasks RAG** (Fase F): composti a lettura (NC aperte ultima analisi + scadenze DMS + manuali), `task_state` per le sole mutazioni utente; completare un task `nc:*` chiude la NC (write-through). RAG = aritmetica a lettura, mai persistito.
+- **Streaming**: SSE via FastAPI `StreamingResponse` (analyze ZIP, analyze-dms, reanalyse) + frontend `fetch` reader (`readSseStream`, auth Bearer header, no EventSource).
 - **Demo distribution**: cloudflared o ngrok tunnel su localhost (no deploy server per il prototipo)
 
 ## Architettura backend (5 fasi)
@@ -26,15 +32,20 @@ Norme supportate (MVP): ISO 9001:2015, ISO 14001:2015, ISO 45001:2018.
 ```
 ZIP upload + CompanyContext
   ↓
-Phase 1   — Extraction: pdfminer → pypdfium2 → Azure DI OCR (cascade) per PDF nativi/scansionati
-Phase 2   — Evidence cards: Azure GPT-4.1-mini → YAML strutturato (1 doc = 1 card, batch 5/6 worker)
+Phase 1   — Extraction page-aware: pypdfium2 per-pagina con marcatori [PAGE n] → OCR Azure DI SOLO sulle pagine scansionate (PDF misti) → fallback pdfminer/OCR full-doc. XLSX/XLSM via openpyxl (marcatori [SHEET]), XLS via xlrd, DOCX con tabelle
+Phase 2   — Evidence cards: Azure GPT-4.1-mini → YAML strutturato (1 doc = 1 card, batch 5/6 worker). L'evidence_yaml integrale viene persistito su DB
 Phase 2.5 — Expiry check: 100% Python deterministico (no LLM) → ExpiryReport con severity per giorni overdue
-Phase 3   — Embedding + Gap analysis: ChromaDB embedded + batch 10 clausole/chiamata LLM + cite-or-fail strict + severity_floor
-Phase 4   — Executive summary + report: LLM produce CompanySnapshot + top integrations + narrative → ComplianceAnalysisResult Pydantic → DOCX 7 sezioni manager-friendly
+Phase 2.6 — Documented-info coverage: registro MAINTAIN/RETAIN per norma + matcher L1 metadata → L2 semantico → L3 conferma assenza via LLM (mai match per nome file)
+Phase 2.7 — Risk register strutturato: estrazione rischi/metodologia/score/mitigazione/owner dai documenti di rischio, con flag deterministici sui campi mancanti (placeholder "to be defined" = mancante)
+Phase 3   — Gap analysis a due stadi: Stage A batch screening su chunk index (10 clausole/chiamata, cite-or-fail strict, severity_floor, confidence) + Stage B deep verification sul TESTO COMPLETO dei documenti per clausole critiche/con atomic_requirements (requirement_checks PRESENT/PARTIAL/ABSENT, hedging, wording-check deterministico, dual remediation correction/corrective_action)
+Phase 3.5 — Cross-clause coherence: 9 chain dichiarative (rischio→controllo→monitoraggio, objectives loop, legal loop…) verificate sulle evidenze citate + registro rischi
+Phase 4   — Executive summary + report: LLM produce CompanySnapshot + top integrations + narrative → ComplianceAnalysisResult Pydantic → DOCX manager-friendly (incl. sezioni documented-info, cross-clause, dual remediation)
 ```
 
-Knowledge base clausole: `backend/compliance/iso_clauses/iso{9001,14001,45001}_clauses.py` (71 clausole, derivate `criticality_tier` / `severity_floor` / `weight` / `expiry_relevant` via `backend/compliance/clause_helpers.py`).
-Prompt LLM: `backend/prompts/compliance/` (`evidence_extraction_prompt.md`, `gap_analysis_batch.md`, `expiry_check_prompt.md` ispirazione PASSO 3, `executive_summary_prompt.md`, `chat_grounded.md`).
+Knowledge base clausole: `backend/compliance/iso_clauses/iso{9001,14001,45001}_clauses.py` (71 clausole, 36 con `atomic_requirements` — fonte: checklist di audit in `checklistevidence/`; derivate `criticality_tier` / `severity_floor` / `weight` / `expiry_relevant` via `backend/compliance/clause_helpers.py`).
+Criteri operativi custom (PRD §1.4.4b): set YAML in `backend/data/requirement_sets/` con lo stesso shape delle clausole — il `label` entra in `norms` accanto agli standard ISO e il motore li processa identici (vedi `example_operating_criteria.yaml` come formato di riferimento).
+Prompt LLM: `backend/prompts/compliance/` (`evidence_extraction_prompt.md`, `gap_analysis_batch.md`, `deep_verification.md`, `cross_clause_prompt.md`, `risk_extraction.md`, `executive_summary_prompt.md`, `chat_grounded.md`, `chat_general.md`).
+Acceptance: `backend/tests/fred_simulation.py` (pack UK con 7 gap seminati) — `pytest tests/test_fred_simulation.py -m slow` deve dare 10/10.
 
 ## Frontend workflow (reference, non obbligatorio)
 
@@ -48,10 +59,11 @@ Quando applicarle davvero:
 
 ### Hard-bans di design (regola dura, anche senza skill workflow)
 
-Anti-references **vietati** specifici per ComplianceOS, codificati qui per evitare reflex AI:
+Anti-references **vietati** specifici per Amisys QHSE, codificati qui per evitare reflex AI:
 
 - **Niente SaaS-cream + navy + green-accent** (Vanta/Drata clone). È il primo riflesso category-reflex per "compliance dashboard". Da rifiutare di default.
-- **Niente dark tech-bro** (`#000` + neon su nero). ComplianceOS non è un terminal observability tool.
+- **Niente dark tech-bro** (`#000` + neon su nero). Il dark mode è navy-tinted (hue 262), mai nero puro. Amisys QHSE non è un terminal observability tool.
+- **Il navy `#1B2944` è il brand chrome** (sidebar/header), non un Vanta-clone: si accoppia con l'arancio, mai con green-accent o cream-card di categoria.
 - **Niente glassmorphism / backdrop-blur decorativo.**
 - **Niente card-grid uniforme** (icon + heading + text ripetuti). Forziamo varianza nel layout.
 - **Niente gradient text** né `background-clip: text` decorativi.
@@ -62,30 +74,48 @@ Se uno di questi pattern compare in un'iterazione, va rifatta. Non si negozia.
 
 ### Cosa il frontend ha (stato post-Sprint F5)
 
-App shell con sidebar + theme toggle + FAB context-aware "Ask the analyst". Login (Bearer token JWT in localStorage). Wizard 4-step (Context Intake → Upload → Review → Progress SSE). Results page con: header score per norma, Company Snapshot, Executive Narrative serif, Expiry Table, Top 10 Priority Integrations, Findings list con expand. Plan (NCR tracker collegato a `useUpdateAction`). Chat grounded `useChat` collegata a `POST /api/compliance/chat`. Dashboard con KPI veri + sparkline storico + recent analyses.
+App shell **brandizzata Amisys QHSE** (sidebar navy + logo arancio a nodi `BrandLogo.tsx`, theme toggle, FAB "Ask the analyst", campanella notifiche `NotificationsBell` in alto a destra). Login (Bearer JWT in localStorage). Pagine: Dashboard (KPI + sparkline), **Documents** (DMS: albero cartelle, upload/import-ZIP, versioni; tab Register con export XLSX; tab Pyramid), wizard 4-step con **Step 2 source = DMS scope / ZIP**, Results (score, snapshot, narrative Inter, expiry, documented-info, cross-clause, **risk register**, findings, Re-analyse), Plan (NCR tracker), Compare (delta), **Tasks** (board RAG), **Tender Q&A** (PQQ con export DOCX), Chat grounded/general.
 
-Tutto in **UK English**. Severity color-coded come da DESIGN.md.
+Brand: **DESIGN.md v2** (navy `#1B2944` chrome + arancio `#F2A33C` accent, Quicksand display + Inter body, niente serif). Token unica fonte in `index.css`. Tutto in **UK English**. Severity/RAG color-coded come da DESIGN.md.
 
 ## Provider LLM
 
-- **Azure OpenAI GPT-4.1-mini** è primario per tutte le chiamate (evidence extraction + gap analysis + chat). GDPR EU.
-- **Gemini 2.5 Flash** è fallback automatico solo su rate limit 429.
-- **Azure Document Intelligence** è OCR primario per PDF scansionati (`prebuilt-read` model).
+- **Dual-model Azure OpenAI** su risorsa unica France Central (Data Zone Standard EU, GDPR):
+  - **GPT-4.1-mini** (16M TPM) — provider standard: Phase 2 evidence, Stage A screening, documented-info L3, risk extraction.
+  - **GPT-4.1 full** (3M TPM) — profilo "deep" (`COMPLIANCE_DEEP_PROVIDER=gpt-4.1-azure` in `.env`): Stage B deep verification, cross-clause, executive summary, chat. `make_client(deep=True)` in `v2/azure_openai_client_v2.py` degrada alla mini se il deep non è configurato — la pipeline non si rompe mai per il profilo opzionale.
+- **Concorrenza** tarata sulle quote alte, override-abile da env: `EVIDENCE_MAX_WORKERS=14`, `GAP_MAX_WORKERS=6`, `DEEP_MAX_WORKERS=6`, `CROSS_MAX_WORKERS=9`, `RISK_MAX_WORKERS=4`. I batch size NON si toccano (sono qualità, non throughput).
+- **Niente fallback Gemini**: rimosso il 2026-06-12 per decisione utente (chiave non utilizzabile). La resilienza è data dai retry con backoff (Phase 2 e 3) + re-ask sui parse-fail + degradazione controllata (carte sintetiche, fallback gaps, 502 chat).
+- **Azure Document Intelligence** è OCR per PDF scansionati (`prebuilt-read`): full-document per PDF interamente scansionati, **per-pagina** sui PDF misti nativi+scansionati.
 
-Endpoint Azure usa formato Foundry v1: `https://<resource>.services.ai.azure.com/openai/v1`. SDK: standard `openai` Python (NON `AzureOpenAI`).
+Endpoint v1 OpenAI-compatible: `https://<resource>.openai.azure.com/openai/v1` (o formato Foundry `services.ai.azure.com/openai/v1`). SDK: standard `openai` Python (NON `AzureOpenAI`). Nota: i modelli Claude su Foundry sono solo Global Standard (inferenza extra-EU possibile) — scartati per coerenza col pitch GDPR.
 
 ## Come avviare
 
 ```powershell
-# Backend
+# Backend — il venv reale sta in C:\Users\user\venv-compliance
+# (NON in ..\venv-compliance: quel path non esiste)
 cd backend
-..\venv-compliance\Scripts\Activate.ps1
+C:\Users\user\venv-compliance\Scripts\Activate.ps1
 uvicorn api_server:app --reload
 
-# Frontend (dopo lo scaffolding via skill)
+# Frontend
 cd frontend
 npm run dev
 ```
+
+## Test
+
+```powershell
+cd backend
+# Suite fast (regression net, no LLM) — deve essere SEMPRE verde
+C:\Users\user\venv-compliance\Scripts\python.exe -m pytest tests -m "not slow"
+# Acceptance Fred-simulation (LLM reale, ~3 min) — 10/10 atteso
+C:\Users\user\venv-compliance\Scripts\python.exe -m pytest tests/test_fred_simulation.py -m slow
+# Regressione ZIP italiano reale (CONSORZIO JEOCON)
+C:\Users\user\venv-compliance\Scripts\python.exe -m pytest tests/test_pipeline_smoke.py -m slow
+```
+
+Il conftest carica `backend/.env` automaticamente per la suite slow.
 
 ## File di riferimento (sola lettura)
 
