@@ -619,6 +619,74 @@ def _calibrate_blob_severity(gap: ClauseGap) -> ClauseGap:
     return gap
 
 
+def _confine_peripheral_clause(
+    gap: ClauseGap,
+    clauses: Dict[str, Dict[str, Any]],
+) -> ClauseGap:
+    """Hardening 2026, problema #1 — confinazione delle clausole periferiche.
+
+    Solo le clausole con una checklist curata (`atomic_requirements`, ar≥4) hanno la
+    macchina per giustificare un verdetto ESTREMO: deep-verification sul testo
+    integrale + credito parziale calibrato. Le clausole SENZA atomic_requirements
+    (contesto §4.x e periferiche §8.x ecc.) vengono giudicate dal solo screening
+    Stage A, che su 3 documentazioni diverse oscilla CONFORMANT↔MINOR↔MAJOR sulla
+    stessa realtà, e che (se instradato allo Stage B con requisiti derivati) tende a
+    over-severità (tutto-ABSENT→MAJOR). Le confiniamo quindi nella banda media:
+      - mai MAJOR  → MINOR (standard) / OBSERVATION (passing/contesto)
+      - mai CONFORMANT → OBSERVATION
+    I verdetti forti restano riservati alla spina dorsale curata (incl. 5.2 politica
+    e 6.2 obiettivi, che sono 'standard' di tier ma hanno atomic_requirements → NON
+    confinate). Rimuove insieme instabilità e over-severità sulle periferiche.
+
+    Nota: nessuna clausola `critical` è ar=0 (tutte le critiche hanno
+    atomic_requirements), quindi l'early-exit sotto le preserva tutte.
+    """
+    clause = clauses.get(gap.clause_id, {})
+    if clause.get("atomic_requirements"):
+        return gap  # clausola curata: intero spettro di severità consentito
+    tier = get_criticality_tier(clause) if clause else "standard"
+
+    if gap.severity == "MAJOR":
+        if tier == "passing":
+            gap.severity, lo, hi = "OBSERVATION", 60, 84
+        else:
+            gap.severity, lo, hi = "MINOR", 30, 59
+        gap.is_spof = False
+        gap.score = max(lo, min(hi, gap.score or lo + 10))
+        _hedge_gap(gap, "Peripheral clause without a curated checklist: capped below "
+                        "major (major findings are reserved for core QMS clauses).")
+    elif gap.severity == "CONFORMANT":
+        gap.severity = "OBSERVATION"
+        gap.score = max(60, min(84, gap.score or 75))
+        _hedge_gap(gap, "Full conformity is asserted only for core QMS clauses with a "
+                        "curated checklist; reported here as a positive observation.")
+    return gap
+
+
+def _hedge_gap(gap: ClauseGap, note: str) -> None:
+    """Marca il gap come hedged e accoda la nota (idempotente sul testo)."""
+    gap.hedged = True
+    gap.hedge_note = (gap.hedge_note + " " + note).strip() if gap.hedge_note else note
+
+
+def _honest_sources(gap: ClauseGap) -> ClauseGap:
+    """Hardening 2026 #6 — fonti oneste sulle assenze genuine.
+
+    Un verdetto MAJOR di assenza non deve esibire 'fonti': se nessun
+    requirement_check è PRESENT/PARTIAL (o non ci sono check), i documenti citati
+    sono vicini semantici esaminati ma NON a supporto del finding ('nulla trovato').
+    Mostrarli contraddice la conclusione e mina la credibilità. Le evidenze reali
+    (PRESENT/PARTIAL) non vengono mai toccate.
+    """
+    if gap.severity != "MAJOR":
+        return gap
+    checks = gap.requirement_checks or []
+    has_support = any(getattr(c, "status", "") in ("PRESENT", "PARTIAL") for c in checks)
+    if not has_support:
+        gap.sources = []
+    return gap
+
+
 def _diversify_chunks(
     results: List[Dict[str, Any]],
     max_per_doc: int,
@@ -722,6 +790,18 @@ def _analyse_norm(
     if docs_by_name:
         try:
             from compliance.deep_verifier import run_deep_verification
+            # Hardening 2026 (raffinamento #3) — doc-selection ibrida per lo Stage B:
+            # i documenti che la Phase 2 ha TAGGATO sulla clausola (iso_clause_primary
+            # /secondary) vengono letti in pieno con priorità, oltre alle citazioni
+            # Stage A + retrieval. Stesso principio del fix retrieval Stage A; riduce
+            # la varianza per cui una clausola curata (es. 8.1/8.4) diventa MAJOR
+            # perché lo Stage B aveva letto i documenti sbagliati.
+            tagged_docs_by_clause = {
+                cid: [c.get("file_name", "")
+                      for c in cards_by_clause.get(_clause_number_from_id(cid), [])
+                      if c.get("file_name")]
+                for cid in clauses
+            }
             all_gaps = run_deep_verification(
                 norm=norm,
                 gaps=all_gaps,
@@ -729,6 +809,7 @@ def _analyse_norm(
                 docs_by_name=docs_by_name,
                 cards_by_id=cards_by_id,
                 evidence_service=evidence_service,
+                tagged_docs_by_clause=tagged_docs_by_clause,
                 context_block=context_block,
                 llm_call=lambda messages, max_tokens: _call_llm(messages, max_tokens=max_tokens, deep=True),
                 apply_floor=_apply_severity_floor,
@@ -748,6 +829,16 @@ def _analyse_norm(
     # requirements (blob-scored da Stage A), che altrimenti restano MAJOR pur
     # avendo evidenza. Le assenze vere (nessuna citazione) restano MAJOR.
     all_gaps = [_calibrate_blob_severity(g) for g in all_gaps]
+
+    # ── Fonti oneste sulle assenze (Hardening 2026, problema #6) ─────────────
+    # Rimuove i vicini semantici irrilevanti dai MAJOR di assenza genuina, PRIMA
+    # della confinazione (così agisce sui verdetti MAJOR originali).
+    all_gaps = [_honest_sources(g) for g in all_gaps]
+
+    # ── Confinazione clausole periferiche (Hardening 2026, problema #1) ───────
+    # Le clausole senza atomic_requirements (ar=0) non possono ricevere verdetti
+    # estremi: i verdetti forti sono riservati alla spina dorsale curata.
+    all_gaps = [_confine_peripheral_clause(g, clauses) for g in all_gaps]
 
     return all_gaps
 

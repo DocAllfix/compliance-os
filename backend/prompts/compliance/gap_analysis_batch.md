@@ -96,6 +96,8 @@ The prompt above has explicit rules for when to assign MAJOR. **Do not default t
 - "The clause is critical so I should be strict" → criticality already raises the floor via `severity_floor` post-processing; you do not need to over-rate.
 - "Only 4 evidence cards were retrieved out of a large organisation" → the retrieval surfaces the top-K most relevant cards by design; absence in your sample does not mean absence in the organisation. Use the language of the evidence you have.
 
+**Quality vs occupational safety.** Italian H&S documents (DVR/risk assessment, RSPP/RLS training, the D.Lgs 81 periodic prevention meeting, health surveillance) count toward risk-based thinking (§6.1) and competence (§7.2) where relevant, but they do NOT by themselves satisfy a quality-specific clause — e.g. a periodic *safety* meeting is not a §9.3 *management review* unless it covers QMS performance inputs/outputs. Credit them for what they actually address.
+
 The cost of a false positive (calling MAJOR what is MINOR or OBSERVATION) is as high as the cost of a false negative. Both undermine trust in the assessment.
 
 ---

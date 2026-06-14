@@ -141,6 +141,36 @@ def iter_zip_files(
 # catching genuinely scanned pages.
 _PDF_PAGE_MIN_NATIVE_CHARS = 25
 
+# Hardening 2026 #3 — quality gate. Some PDFs carry a broken/custom font encoding:
+# pypdfium2 returns plenty of NON-whitespace characters, but they are control/glyph
+# codes (\x02\x03…), not real text. The old "scanned = few non-ws chars" test saw a
+# "full" page and suppressed OCR (observed: CO.ENERGIE visura, 19.7k chars of garbage
+# → readable:false card → §4.1 starved). We now also treat a page/document as needing
+# OCR when the ratio of *printable* characters is too low.
+_PDF_MIN_QUALITY_RATIO = 0.60   # printable / non-whitespace below this → garbage
+_PDF_QUALITY_MIN_CHARS = 40     # need a little text before judging by ratio
+
+
+def _is_low_quality_text(text: str) -> bool:
+    """True when `text` looks like font-encoding garbage rather than real text.
+
+    Signal = RATIO of printable characters among non-whitespace (Hardening 2026 #3).
+    The ratio distinguishes garbage (control-char glyphs, ratio ~0) from real text
+    (ratio ~1) at ANY length, so a low `_PDF_QUALITY_MIN_CHARS` (40) catches the SHORT
+    garbage pages (osservato: pagine oltre la 2 della visura CO.ENERGIE) WITHOUT
+    false-positiving large clean documents that carry a few stray control chars
+    (es. il DVR Serapide: 187k char, 42 control char, ratio 1.0 → NON garbage).
+    An absolute control-char count was tried and rejected: it flags big clean docs.
+    Conservative on legitimate text: str.isprintable() keeps accented Latin readable.
+    """
+    import re
+    t = re.sub(r"\[PAGE\s+\d+\]", "", text or "")
+    nonspace = [c for c in t if not c.isspace()]
+    if len(nonspace) < _PDF_QUALITY_MIN_CHARS:
+        return False
+    readable = sum(1 for c in nonspace if c.isprintable())
+    return (readable / len(nonspace)) < _PDF_MIN_QUALITY_RATIO
+
 
 def extract_document(filename: str, raw: bytes) -> str:
     """Best-effort text extraction with page/sheet markers (Sprint R1).
@@ -223,17 +253,20 @@ def _extract_pdf_text(raw: bytes, filename: str) -> str:
         page_count = 0
 
     if page_texts:
-        # Identify scanned pages (no usable native text) and OCR only those.
+        # Identify pages needing OCR: either too little native text (scanned) OR
+        # native text that is mostly non-printable garbage (broken font encoding,
+        # Hardening 2026 #3) — both go to Azure DI for those pages only.
         scanned_pages = [
             n for n, t in page_texts.items()
             if len("".join(t.split())) < _PDF_PAGE_MIN_NATIVE_CHARS
+            or _is_low_quality_text(t)
         ]
         if scanned_pages:
             from compliance.azure_ocr import ocr_pdf_pages
             ocr_results = ocr_pdf_pages(raw, scanned_pages, filename=filename)
             if ocr_results:
                 _log.info(
-                    "[Phase 1] %s: OCR recovered %d/%d scanned page(s)",
+                    "[Phase 1] %s: OCR recovered %d/%d low-text/garbage page(s)",
                     filename, len(ocr_results), len(scanned_pages),
                 )
             for n, t in ocr_results.items():
@@ -244,7 +277,10 @@ def _extract_pdf_text(raw: bytes, filename: str) -> str:
             for n in sorted(page_texts)
             if page_texts[n].strip()
         )
-        if combined.strip():
+        # Document-level backstop: if the combined native+per-page-OCR text is still
+        # mostly garbage (per-page OCR didn't rescue it), fall through to full-document
+        # OCR rather than returning unreadable glyph codes downstream.
+        if combined.strip() and not _is_low_quality_text(combined):
             return combined
 
     # Fallback: pdfminer whole-document (no page markers, legacy behaviour)

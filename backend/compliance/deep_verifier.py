@@ -51,10 +51,36 @@ DEEP_CONFIDENCE_THRESHOLD = 0.6   # Stage A confidence below this → deep pass
 _PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "compliance" / "deep_verification.md"
 
 
+def _sample_long_doc(text: str, cap: int = DEEP_MAX_DOC_CHARS) -> str:
+    """Hardening 2026 (raffinamento) — testa+coda per i documenti molto lunghi.
+
+    La deep-verification prendeva solo i primi `cap` caratteri di ogni documento:
+    per un DVR da 224k char vedeva il ~27% e la CODA (registri rischi, conclusioni,
+    obiettivi, azioni) non entrava mai nell'analisi. Per i doc oltre il cap prendiamo
+    testa (60%) + coda (40%) con un marcatore, così l'intero arco del documento
+    informa la verifica. I doc sotto il cap restano integri.
+    """
+    text = text or ""
+    if len(text) <= cap:
+        return text
+    head = int(cap * 0.6)
+    tail = cap - head
+    return (text[:head].rstrip()
+            + "\n\n[… omitted middle section — head and tail shown …]\n\n"
+            + text[-tail:].lstrip())
+
+
 # ── Selection ─────────────────────────────────────────────────────────────────
 
 def should_deep_verify(clause: Dict[str, Any], gap: ClauseGap) -> bool:
-    """Quality-first selection: atomic_requirements OR critical OR uncertain."""
+    """Quality-first selection: atomic_requirements OR critical OR uncertain.
+
+    Le clausole SENZA atomic_requirements (periferiche) non vengono deep-verificate:
+    i loro verdotti vengono confinati nella banda media da
+    `gap_analyzer._confine_peripheral_clause` (Hardening 2026 #1) — i verdetti forti
+    (MAJOR/CONFORMANT) sono riservati alle clausole con checklist curata, dove la
+    deep-verification + il credito parziale li giustificano.
+    """
     if clause.get("atomic_requirements"):
         return True
     if clause.get("is_spof") or get_criticality_tier(clause) == "critical":
@@ -129,6 +155,7 @@ def run_deep_verification(
     pct_base: float = 0.0,
     pct_budget: float = 0.0,
     risk_register_text: str = "",
+    tagged_docs_by_clause: Optional[Dict[str, List[str]]] = None,
 ) -> List[ClauseGap]:
     """
     Re-verify the selected gaps in place. Returns the (same) list with
@@ -200,6 +227,7 @@ def run_deep_verification(
                 system_prompt=system_prompt,
                 llm_call=llm_call,
                 risk_register_text=risk_register_text,
+                tagged_docs=(tagged_docs_by_clause or {}).get(gap.clause_id, []),
             )
             if new_gap is not None:
                 gaps[idx] = _apply_partial_credit(apply_floor(new_gap, clause, []))
@@ -230,8 +258,9 @@ def _deep_verify_clause(
     system_prompt: str,
     llm_call: Callable,
     risk_register_text: str = "",
+    tagged_docs: Optional[List[str]] = None,
 ) -> Optional[ClauseGap]:
-    doc_names = _select_documents(clause, gap, docs_by_name, evidence_service)
+    doc_names = _select_documents(clause, gap, docs_by_name, evidence_service, tagged_docs)
     if not doc_names:
         return None  # nothing to read in full — keep Stage A verdict
 
@@ -274,20 +303,31 @@ def _select_documents(
     gap: ClauseGap,
     docs_by_name: Dict[str, str],
     evidence_service,
+    tagged_docs: Optional[List[str]] = None,
 ) -> List[str]:
     """
-    Pick up to DEEP_MAX_DOCS documents to read in full:
-      1. the documents already cited by Stage A (most pertinent by definition)
-      2. topped up with chunk-retrieval hits for breadth
-    Returns normalised doc keys present in docs_by_name.
+    Pick up to DEEP_MAX_DOCS documents to read in full, in priority order:
+      1. documents the Phase 2 cards TAGGED on this clause (iso_clause_primary/
+         secondary) — the most reliably clause-relevant (Hardening 2026 #3 raffin.);
+      2. documents already cited by Stage A;
+      3. chunk-retrieval hits for breadth.
+    Per le clausole genuinamente assenti non esistono card taggate → si ricade su
+    (2)+(3), comportamento invariato. Returns normalised keys present in docs_by_name.
     """
     chosen: List[str] = []
 
-    for src in gap.sources:
-        key = _norm_name(src.file_name)
+    def _add(fname: Any) -> bool:
+        key = _norm_name(str(fname or ""))
         if key in docs_by_name and key not in chosen:
             chosen.append(key)
-        if len(chosen) >= DEEP_MAX_DOCS:
+        return len(chosen) >= DEEP_MAX_DOCS
+
+    for fn in (tagged_docs or []):
+        if _add(fn):
+            return chosen
+
+    for src in gap.sources:
+        if _add(src.file_name):
             return chosen
 
     if evidence_service is not None and len(chosen) < DEEP_MAX_DOCS:
@@ -296,10 +336,7 @@ def _select_documents(
         except Exception:
             hits = []
         for hit in hits:
-            key = _norm_name(str(hit.get("file_name", "")))
-            if key in docs_by_name and key not in chosen:
-                chosen.append(key)
-            if len(chosen) >= DEEP_MAX_DOCS:
+            if _add(hit.get("file_name", "")):
                 break
 
     return chosen
@@ -344,7 +381,7 @@ def _build_user_prompt(
         f"## Documents ({len(doc_names)} full texts)",
     ]
     for key in doc_names:
-        text = docs_by_name.get(key, "")[:DEEP_MAX_DOC_CHARS]
+        text = _sample_long_doc(docs_by_name.get(key, ""), DEEP_MAX_DOC_CHARS)
         parts.append(f"### DOCUMENT: {key}")
         parts.append(text)
         parts.append("")
@@ -485,8 +522,13 @@ def _merge_verdict(
             relevance_score=confidence if confidence is not None else 0.7,
             summary=None,
         ))
-    if not sources:
-        sources = stage_a.sources  # keep Stage A citations rather than none
+    # Hardening 2026 #6 — fonti oneste: ripieghiamo sulle citazioni Stage A SOLO se
+    # la deep-verification non ha prodotto alcun check (Stage B non ha potuto
+    # giudicare). Se invece i check esistono e sono TUTTI ABSENT, è un'assenza
+    # genuina → nessuna fonte (prima ereditava le citazioni Stage A, spesso vicini
+    # semantici irrilevanti allegati a un finding "nulla trovato").
+    if not sources and not checks:
+        sources = stage_a.sources
 
     # Two-level remediation (PRD 1.4.7) with template fallbacks.
     rem = data.get("remediation") or {}

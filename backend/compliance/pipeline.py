@@ -124,7 +124,11 @@ def _extract_documents(zip_bytes: bytes, emit: Callable) -> List[Dict[str, Any]]
 #   - Scales: 70 docs = 1 wave, 200 docs = 3 waves.
 EVIDENCE_BATCH_SIZE = 5
 EVIDENCE_MAX_WORKERS = int(os.environ.get("EVIDENCE_MAX_WORKERS", "14"))
-EVIDENCE_MAX_OUTPUT_TOKENS = 8000
+# Hardening 2026 #2 — budget output alzato 8000→12000: con 5 card/batch e
+# documenti ricchi (es. DVR), 8000 token erano stretti e l'LLM poteva troncare/
+# saltare una card. Combinato con la riconciliazione doc↔card, evita la perdita
+# silenziosa di documenti dalla Phase 2.
+EVIDENCE_MAX_OUTPUT_TOKENS = 12000
 EVIDENCE_DOC_CHAR_CAP = 15_000
 
 # Retry config for transient 429 / connection errors (per single batch).
@@ -214,6 +218,18 @@ def _extract_evidence(
     # Strip meta/preamble before each batch so the fallback parser doesn't
     # choke on inter-batch `---` markers and `meta:` blocks (the parser splits
     # on `# ── DOC N ──`; anything between two markers must be parseable YAML).
+    #
+    # Hardening 2026 #2 — RICONCILIAZIONE doc↔card: il fallback sintetico storico
+    # scattava solo se il batch tornava VUOTO. Se l'LLM tornava N-1 card su N doc
+    # (saltava/troncava una card), il documento spariva in silenzio (osservato: il
+    # DVR di CO.ENERGIE, 100k char, → nessuna card → §6.1 falso MAJOR). Ora, per
+    # ogni batch non-vuoto, verifichiamo che OGNI doc abbia una card; i doc scoperti
+    # vengono ri-tentati in isolamento e, se ancora mancanti, ricevono una card
+    # sintetica per-doc. Nessun documento può più sparire senza traccia.
+    # Assemble: synthetic cards only for FULLY-empty batches. Partial drops (LLM
+    # skips a card) and parse corruptions are caught by the FINAL reconciliation
+    # below, which runs AFTER the global renumber (so it sees exactly what the
+    # downstream parser will see).
     parts: List[str] = []
     for idx, batch in enumerate(batches):
         raw = batch_results.get(idx)
@@ -227,11 +243,41 @@ def _extract_evidence(
             parts.append(_synthetic_yaml_for_batch(batch))
 
     combined = "\n\n".join(parts)
-
     # Renumber DOC markers and evidence_id globally so the parser sees a single
     # contiguous set instead of N batches each starting at 1.
     combined = _renumber_doc_markers(combined)
     combined = _renumber_evidence_ids(combined)
+
+    # Hardening 2026 #2 — RICONCILIAZIONE FINALE doc↔card sul combined già renumerato.
+    # Cattura QUALSIASI documento senza card valida nello yaml finale: sia il batch
+    # parziale (LLM salta/tronca una card) sia una corruzione di parsing. I doc
+    # scoperti vengono ri-tentati in isolamento; se ancora mancanti ricevono una card
+    # sintetica. Nessun documento può sparire silenziosamente dalla Phase 2.
+    missing = _docs_without_card(docs, combined)
+    if missing:
+        _log.warning(
+            "[Phase 2] %d/%d doc senza card nel combined — retry: %s",
+            len(missing), total, [d.get("filename", "?").split("/")[-1] for d in missing],
+        )
+        for i in range(0, len(missing), EVIDENCE_BATCH_SIZE):
+            rec = _call_llm_for_batch(
+                azure_client=azure_client, system_prompt=system_prompt,
+                batch_docs=missing[i:i + EVIDENCE_BATCH_SIZE],
+                batch_idx=0, total_batches=1,
+            )
+            if rec and rec.strip():
+                combined = combined + "\n\n" + _strip_meta_block(rec)
+        combined = _renumber_doc_markers(combined)
+        combined = _renumber_evidence_ids(combined)
+        still = _docs_without_card(docs, combined)
+        if still:
+            _log.warning(
+                "[Phase 2] %d doc ancora senza card dopo retry — card sintetiche: %s",
+                len(still), [d.get("filename", "?").split("/")[-1] for d in still],
+            )
+            combined = combined + "\n\n" + _synthetic_yaml_for_batch(still)
+            combined = _renumber_doc_markers(combined)
+            combined = _renumber_evidence_ids(combined)
 
     # Sprint 2.2 — Post-LLM card validation (telemetry only; never mutates the
     # YAML string returned downstream).
@@ -313,11 +359,30 @@ def _build_evidence_azure_client():
         return None
 
 
+def _sample_doc_text(content: str, cap: int = EVIDENCE_DOC_CHAR_CAP) -> str:
+    """Hardening 2026 #4 — campionamento testa+coda per i documenti lunghi.
+
+    La card di Phase 2 veniva costruita SOLO sui primi `cap` caratteri: per un DVR
+    da 224k char la card vedeva il ~7% (intro/metodologia), mancando i contenuti di
+    coda (registri rischi, conclusioni, obiettivi). Per i documenti oltre il cap
+    prendiamo testa (60%) + coda (40%) con un marcatore di omissione, così la card
+    riflette l'intero documento. (Lo Stage B continua a leggere il testo integrale.)
+    """
+    content = content or ""
+    if len(content) <= cap:
+        return content
+    head = int(cap * 0.6)
+    tail = cap - head
+    return (content[:head].rstrip()
+            + "\n\n[… omitted middle section …]\n\n"
+            + content[-tail:].lstrip())
+
+
 def _build_user_prompt_for_batch(batch_docs: List[Dict[str, Any]]) -> str:
     """Build the user message listing the docs in this batch (with doc cap)."""
     parts: List[str] = []
     for i, doc in enumerate(batch_docs, 1):
-        content = (doc.get("content") or "")[:EVIDENCE_DOC_CHAR_CAP]
+        content = _sample_doc_text(doc.get("content") or "", EVIDENCE_DOC_CHAR_CAP)
         parts.append(f"### DOCUMENT {i}: {doc.get('filename', 'unknown')}\n{content}")
     return (
         f"## DOCUMENTS TO ANALYSE ({len(batch_docs)} files)\n\n"
@@ -435,8 +500,42 @@ def _synthetic_yaml_for_batch(batch_docs: List[Dict[str, Any]]) -> str:
     return "\n".join(parts)
 
 
+def _basename(name: str) -> str:
+    """Ultima componente di path, normalizzata, per il match doc↔card."""
+    return str(name or "").replace("\\", "/").split("/")[-1].strip().lower()
+
+
+def _docs_without_card(docs: List[Dict[str, Any]], batch_yaml: str) -> List[Dict[str, Any]]:
+    """Riconciliazione doc↔card (Hardening 2026 #2).
+
+    Parsa le card prodotte per un batch e ritorna i documenti del batch che NON
+    hanno una card corrispondente (match per basename, multiset → robusto ai
+    basename duplicati entro lo stesso batch). I documenti scoperti vanno ri-tentati.
+    """
+    from collections import Counter
+    from compliance.gap_analyzer import _parse_evidence_yaml
+    try:
+        cards = _parse_evidence_yaml(batch_yaml)
+    except Exception:
+        cards = []
+    card_bn = Counter(_basename(c.get("file_name", "")) for c in cards if c.get("file_name"))
+    missing: List[Dict[str, Any]] = []
+    for d in docs:
+        bn = _basename(d.get("filename", ""))
+        if card_bn.get(bn, 0) > 0:
+            card_bn[bn] -= 1
+        else:
+            missing.append(d)
+    return missing
+
+
 _DOC_MARKER_RE = re.compile(r"#\s*──\s*DOC\s*\d+\s*──")
-_EVIDENCE_ID_RE = re.compile(r'evidence_id:\s*"?ev_\d+(_[A-Za-z0-9_]*)?"?')
+# Hardening 2026 #2 (root cause) — lo slug dell'evidence_id può contenere TRATTINI
+# e PUNTI (l'LLM ci mette spesso la data del documento, es. ev_002_dvr_rev02_2024-09-26).
+# Il pattern precedente `[A-Za-z0-9_]*` si fermava al trattino e lasciava testo
+# penzolante (…2024"-09-26") che rompeva lo YAML → la card spariva nel parse finale.
+# Ora lo slug assorbe l'intero token fino alla chiusura.
+_EVIDENCE_ID_RE = re.compile(r'evidence_id:\s*"?ev_\d+(_[A-Za-z0-9_.\-]*)?"?')
 
 
 def _strip_meta_block(raw_yaml: str) -> str:

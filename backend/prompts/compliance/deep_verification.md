@@ -136,6 +136,16 @@ A single JSON object. No markdown fences, no commentary.
 - All output in UK English (organisation, programme, behaviour, recognise).
 - Recognition is semantic: objectives may be labelled targets/KPIs/indicators;
   a risk assessment may be a DVR or hazard register. Judge by content.
+- **Scope discipline (quality vs occupational safety).** Italian health & safety
+  documents (DVR/risk assessment, RSPP/RLS certificates, the periodic prevention
+  meeting under D.Lgs 81, health-surveillance records) ARE valid evidence of
+  risk-based thinking (§6.1) and competence (§7.2) to the extent they bear on the
+  management system. They are NOT, on their own, evidence of a quality-specific
+  clause: a periodic *safety* meeting is not a §9.3 *management review* unless it
+  actually covers QMS performance inputs/outputs (quality objectives, customer
+  satisfaction, audit results, process performance). When a quote comes from a
+  purely H&S document, confirm it addresses the QUALITY requirement before marking
+  PRESENT; otherwise mark PARTIAL/ABSENT and say so in the note.
 - The cost of a false MAJOR equals the cost of a missed gap — both destroy
   trust. Apply the severity taxonomy rigorously.
 - Return exactly one JSON object, nothing else.
