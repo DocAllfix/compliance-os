@@ -183,6 +183,21 @@ ul, ol { list-style: none; }
 .nav-item.active { color: var(--text-primary); background: var(--bg-page); font-weight: 600; }
 .nav-item .icon { width: 16px; height: 16px; opacity: 0.85; flex-shrink: 0; }
 
+/* Sidebar navy chrome: hover/active espliciti ad alta specificità — battono
+   il duplicato stantio in pages.css (.nav-item:hover con bg chiaro) che
+   altrimenti rende il testo bianco illeggibile su sfondo chiaro. */
+.sidebar .nav-item { color: var(--on-navy-muted); }
+.sidebar .nav-item:hover {
+  background: oklch(34% 0.05 262);
+  color: var(--on-navy);
+}
+.sidebar .nav-item.active {
+  background: oklch(31% 0.055 262);
+  color: var(--on-navy);
+  box-shadow: inset 2px 0 0 var(--brand-orange);
+}
+.sidebar .nav-item.active .icon { color: var(--brand-orange); opacity: 1; }
+
 .sidebar-footer {
   margin-top: auto;
   padding: 14px 16px;
