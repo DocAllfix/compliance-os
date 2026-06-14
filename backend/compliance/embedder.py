@@ -230,8 +230,21 @@ class EvidenceEmbedder:
 
         if not ids:
             return 0
-        self._collection.add(documents=texts, metadatas=metas, ids=ids)
-        return len(ids)
+        # Rete di sicurezza: ChromaDB rifiuta ID duplicati e farebbe crashare
+        # l'intera pipeline. Se due card condividono lo stesso evidence_id
+        # (es. documenti duplicati sfuggiti al dedup), de-duplichiamo gli ID
+        # aggiungendo un suffisso progressivo invece di propagare l'eccezione.
+        seen: Dict[str, int] = {}
+        uniq_ids: List[str] = []
+        for _id in ids:
+            if _id in seen:
+                seen[_id] += 1
+                uniq_ids.append(f"{_id}_dup{seen[_id]}")
+            else:
+                seen[_id] = 0
+                uniq_ids.append(_id)
+        self._collection.add(documents=texts, metadatas=metas, ids=uniq_ids)
+        return len(uniq_ids)
 
     def index_evidence_cards(self, cards: List[Dict[str, Any]]) -> int:
         """

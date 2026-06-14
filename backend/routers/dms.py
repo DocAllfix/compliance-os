@@ -175,35 +175,33 @@ async def import_zip(
     folder_id: Optional[int] = Form(None),
     user: Dict = Depends(_get_current_user),
 ):
-    """Import massivo: ogni file dello ZIP entra nella cartella (create o
-    nuova versione). Riusa il name-repair cp437/NFD dei ZIP reali."""
+    """Import massivo: ogni file dello ZIP entra nella cartella (create o nuova
+    versione), **ricorrendo dentro gli ZIP annidati** (solo il junk macOS resta
+    fuori). Il nome documento è il basename; il path interno resta nella nota."""
+    from compliance.extraction import iter_zip_files
     if folder_id is not None:
         _require_folder_access(folder_id, user)
     raw = await file.read()
     imported, versioned, skipped = 0, 0, 0
-    try:
-        with zipfile.ZipFile(io.BytesIO(raw)) as zf:
-            for name in zf.namelist():
-                if name.endswith("/"):
-                    continue
-                display = _repair_zip_name(name)
-                try:
-                    data = zf.read(name)
-                    if not data:
-                        skipped += 1
-                        continue
-                    res = _ingest_one(user["username"], folder_id, display,
-                                      data, user["username"], note="zip import")
-                    if res["deduped"]:
-                        skipped += 1
-                    elif res["version"] > 1:
-                        versioned += 1
-                    else:
-                        imported += 1
-                except Exception:
-                    skipped += 1
-    except zipfile.BadZipFile:
-        raise HTTPException(status_code=422, detail="Not a valid ZIP archive")
+    files = list(iter_zip_files(raw))
+    if not files:
+        raise HTTPException(status_code=422, detail="No importable files (not a valid ZIP, or empty)")
+    for path, data in files:
+        try:
+            if not data:
+                skipped += 1
+                continue
+            basename = path.rsplit("/", 1)[-1]
+            res = _ingest_one(user["username"], folder_id, basename, data,
+                              user["username"], note=f"zip import: {path}")
+            if res["deduped"]:
+                skipped += 1
+            elif res["version"] > 1:
+                versioned += 1
+            else:
+                imported += 1
+        except Exception:
+            skipped += 1
     _audit(user, "dms_import_zip", "folder", folder_id,
            {"imported": imported, "versioned": versioned, "skipped": skipped})
     return {"ok": True, "imported": imported, "versioned": versioned, "skipped": skipped}

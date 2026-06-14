@@ -64,6 +64,55 @@ def should_deep_verify(clause: Dict[str, Any], gap: ClauseGap) -> bool:
     return False
 
 
+# ── Partial credit (calibrazione 2026-06-14, Opzione B) ───────────────────────
+
+# Copertura minima degli atomic requirements (PRESENT pesa 1, PARTIAL 0.5) per
+# concedere il declassamento MAJOR→MINOR. Un requisito pienamente PRESENT
+# declassa sempre (il processo è dimostrato); altrimenti basta una copertura
+# ≥ soglia. Solo le assenze sostanziali restano MAJOR.
+PARTIAL_CREDIT_MIN_COVERAGE = 0.10
+
+
+def _apply_partial_credit(gap: "ClauseGap") -> "ClauseGap":
+    """Opzione B — credito parziale, applicato DOPO il severity_floor.
+
+    Quando gli atomic requirements mostrano un processo ALMENO parzialmente
+    evidenziato (≥1 PRESENT/PARTIAL e copertura ≥ soglia), un verdetto MAJOR
+    derivante solo dall'assenza di documenti-di-sistema viene declassato a
+    MINOR, con score reattivo alla copertura. Distingue 'processo inesistente'
+    (resta MAJOR) da 'record presenti ma procedura non documentata/non caricata'
+    (MINOR). Le assenze totali (0 PRESENT, 0 PARTIAL, o copertura < soglia)
+    restano MAJOR.
+
+    Non tocca i verdetti già ≤ MINOR; non promuove mai oltre MINOR (no falsi
+    positivi al contrario)."""
+    checks = gap.requirement_checks or []
+    if gap.severity != "MAJOR" or not checks:
+        return gap
+
+    present = sum(1 for c in checks if getattr(c, "status", "") == "PRESENT")
+    partial = sum(1 for c in checks if getattr(c, "status", "") == "PARTIAL")
+    total = len(checks)
+    if total == 0 or (present + partial) == 0:
+        return gap  # assenza totale → resta MAJOR
+
+    coverage = (present + 0.5 * partial) / total
+    # Un requisito pienamente PRESENT declassa sempre; altrimenti serve la
+    # copertura minima (evita che 1 PARTIAL su 15 salvi una clausola quasi vuota).
+    if present == 0 and coverage < PARTIAL_CREDIT_MIN_COVERAGE:
+        return gap  # processo quasi inesistente → resta MAJOR
+
+    # Declassa a MINOR con score reattivo alla copertura (banda 32-59).
+    gap.severity = "MINOR"
+    gap.score = max(gap.score, min(59, 32 + round(coverage * 27)))
+    gap.hedged = True
+    note = ("Process partially evidenced (some requirements demonstrated): "
+            "downgraded from major to minor. Provide the governing documented "
+            "procedure to close the gap.")
+    gap.hedge_note = (gap.hedge_note + " " + note).strip() if gap.hedge_note else note
+    return gap
+
+
 # ── Public entry point ────────────────────────────────────────────────────────
 
 def run_deep_verification(
@@ -153,7 +202,7 @@ def run_deep_verification(
                 risk_register_text=risk_register_text,
             )
             if new_gap is not None:
-                gaps[idx] = apply_floor(new_gap, clause, [])
+                gaps[idx] = _apply_partial_credit(apply_floor(new_gap, clause, []))
         except Exception as e:
             _log.warning("[Deep] %s failed (%s) — keeping Stage A verdict",
                          gap.clause_id, str(e)[:200])

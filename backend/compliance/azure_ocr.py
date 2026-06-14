@@ -16,16 +16,24 @@ Falls back silently (empty results) if the SDK or keys are missing.
 """
 from __future__ import annotations
 
+import logging
 import os
 from typing import Dict, List, Optional
 
+_log = logging.getLogger("compliance.azure_ocr")
+
 
 def _get_di_client():
-    """Build a DocumentIntelligenceClient, or None when not configured."""
+    """Build a DocumentIntelligenceClient, or None when not configured.
+
+    Logga il MOTIVO quando ritorna None (chiave assente o SDK mancante): prima
+    falliva in silenzio e l'OCR risultava muto senza alcun segnale — gli ZIP
+    di soli PDF scansionati uscivano vuoti."""
     endpoint = os.environ.get("AZURE_DI_ENDPOINT", "").strip()
     key = os.environ.get("AZURE_DI_KEY", "").strip()
 
     if not endpoint or not key or key in ("YOUR_DI_KEY_HERE", "placeholder"):
+        _log.warning("[OCR] Azure DI non configurato (endpoint/key mancanti) — i PDF scansionati usciranno vuoti")
         return None
 
     try:
@@ -36,7 +44,12 @@ def _get_di_client():
             endpoint=endpoint,
             credential=AzureKeyCredential(key),
         )
-    except Exception:
+    except ImportError as e:
+        _log.error("[OCR] SDK azure-ai-documentintelligence non installato (%s) — "
+                   "`pip install azure-ai-documentintelligence`. OCR disattivato.", e)
+        return None
+    except Exception as e:
+        _log.error("[OCR] impossibile creare il client Azure DI: %s", e)
         return None
 
 
@@ -57,7 +70,8 @@ def ocr_pdf_bytes(raw: bytes, filename: str = "") -> str:
         result = poller.result()
         return result.content or ""
 
-    except Exception:
+    except Exception as e:
+        _log.warning("[OCR] full-doc OCR fallito per %s: %s", filename or "?", str(e)[:200])
         return ""
 
 
@@ -98,5 +112,6 @@ def ocr_pdf_pages(raw: bytes, page_numbers: List[int], filename: str = "") -> Di
                 out[int(page_no)] = text
         return out
 
-    except Exception:
+    except Exception as e:
+        _log.warning("[OCR] per-page OCR fallito per %s: %s", filename or "?", str(e)[:200])
         return {}

@@ -49,39 +49,67 @@ _log = logging.getLogger("compliance.pipeline")
 
 def _extract_documents(zip_bytes: bytes, emit: Callable) -> List[Dict[str, Any]]:
     """
-    Extract and read text from all files in a ZIP archive.
-    Returns a list of {filename, content} dicts.
-    Uses the existing v2 text_extractor infrastructure where available.
+    Estrae il testo da TUTTI i file di un archivio ZIP, **ricorrendo dentro gli
+    ZIP annidati** a qualsiasi profondità (il junk macOS — `__MACOSX/`, `._*`,
+    `.DS_Store` — è l'unica cosa esclusa). Ritorna una lista {filename, content}.
+
+    Estrazione native-first: per ogni file `extract_document` prova il testo
+    nativo (pypdfium/openpyxl/docx) e ricade su OCR Azure DI solo per i PDF
+    senza testo nativo (scansionati). I file che non producono testo vengono
+    saltati ma il problema resta visibile nei log.
     """
-    emit(5.0, "Extracting documents from archive…")
+    import hashlib
+    from compliance.extraction import iter_zip_files
+
+    emit(5.0, "Extracting documents from archive (nested archives included)…")
     docs: List[Dict[str, Any]] = []
+    warnings: List[str] = []
 
-    try:
-        import zipfile, io
-        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
-            names = [n for n in zf.namelist() if not n.endswith("/")]
-            emit(8.0, f"Found {len(names)} files in archive.")
+    # 1) raccogli tutti i file reali (ricorsione zip annidati)
+    all_files = list(iter_zip_files(zip_bytes, on_warn=lambda m: warnings.append(m)))
 
-            for raw_name in names:
-                # Sprint G.2 (rivisto): i ZIP creati su macOS hanno spesso
-                # i nomi salvati in UTF-8 ma SENZA il bit 11 del flag attivo.
-                # Python zipfile in quel caso decodifica con cp437 (legacy
-                # default), producendo caratteri "spazzatura" (es. "╠Ç" al
-                # posto di "à"). Il rimedio è ricodificare con cp437 e
-                # ridecodificare con utf-8. Poi normalizziamo NFC per sicurezza.
-                display_name = _repair_zip_name(raw_name)
-                try:
-                    # zf.read() vuole il nome internamente registrato (raw_name).
-                    raw = zf.read(raw_name)
-                    content = _read_file_content(display_name, raw)
-                    if content:
-                        docs.append({"filename": display_name, "content": content})
-                except Exception as e:
-                    emit(8.0, f"Warning: could not read {display_name}: {e}")
+    # 1b) DEDUP per contenuto (sha256): i pacchetti reali hanno spesso lo stesso
+    # file sia "loose" sia dentro uno ZIP annidato (es. cartella PARTE II +
+    # PARTE II.zip con gli stessi PDF). Tenere entrambe le copie generava
+    # evidence_id/chunk-id duplicati → crash ChromaDB ("duplicated IDs"). Si
+    # tiene la prima occorrenza; il dedup PRIMA dell'estrazione evita anche OCR
+    # ripetuto sugli stessi bytes.
+    files: List = []
+    seen_hashes: set = set()
+    dup_count = 0
+    for name, raw in all_files:
+        h = hashlib.sha256(raw).hexdigest()
+        if h in seen_hashes:
+            dup_count += 1
+            continue
+        seen_hashes.add(h)
+        files.append((name, raw))
+    total = len(files)
+    emit(6.0, f"Found {total} unique files (nested ZIPs unpacked; "
+              f"{dup_count} byte-identical duplicates skipped).")
 
-    except Exception as e:
-        emit(5.0, f"Archive extraction failed: {e}")
+    # 2) estrai il testo (native-first, OCR fallback) con progress per file
+    skipped = 0
+    for i, (name, raw) in enumerate(files):
+        try:
+            content = _read_file_content(name, raw)
+            if content and content.strip():
+                docs.append({"filename": name, "content": content})
+            else:
+                skipped += 1
+                _log.info("[Phase 1] no text extracted from %s (scanned without OCR?)", name)
+        except Exception as e:
+            skipped += 1
+            warnings.append(f"{name}: {e}")
+            _log.warning("[Phase 1] extraction failed for %s: %s", name, e)
+        if total and (i % 5 == 0 or i == total - 1):
+            emit(6.0 + 2.0 * (i + 1) / total,
+                 f"Reading documents… {i + 1}/{total} ({len(docs)} with text)")
 
+    for w in warnings[:20]:
+        _log.warning("[Phase 1] %s", w)
+    emit(8.0, f"Extraction complete: {len(docs)} documents with text "
+              f"({skipped} without text, {dup_count} duplicates skipped).")
     return docs
 
 # ──────────────────────────────────────────────────────────────────────────────

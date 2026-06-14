@@ -16,10 +16,12 @@ Formato output:
 """
 from __future__ import annotations
 
+import io
 import logging
 import unicodedata
+import zipfile
 from pathlib import Path
-from typing import Dict, List
+from typing import Callable, Dict, Iterator, List, Optional, Tuple
 
 _log = logging.getLogger("compliance.extraction")
 
@@ -57,6 +59,80 @@ def _repair_zip_name(raw_name: str) -> str:
 
     # Default path: normalize NFC (gestisce anche NFD da macOS)
     return unicodedata.normalize("NFC", raw_name)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ZIP walking — ricorsivo sugli ZIP annidati, esclude SOLO il junk macOS
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Tetto di sicurezza contro zip-bomb / nesting patologico.
+_ZIP_MAX_DEPTH = 24
+_ZIP_MAX_FILES = 5000
+
+
+def _is_zip_junk(name: str) -> bool:
+    """True per gli artefatti macOS che NON sono documenti reali:
+    cartella `__MACOSX/`, file AppleDouble `._*`, `.DS_Store`. Tutto il resto
+    (inclusi gli ZIP annidati) è contenuto valido."""
+    base = name.rsplit("/", 1)[-1]
+    return (
+        "__MACOSX" in name.split("/")
+        or base.startswith("._")
+        or base == ".DS_Store"
+        or base == ""
+    )
+
+
+def iter_zip_files(
+    zip_bytes: bytes,
+    *,
+    _depth: int = 0,
+    _prefix: str = "",
+    on_warn: Optional[Callable[[str], None]] = None,
+) -> Iterator[Tuple[str, bytes]]:
+    """Cammina un archivio ZIP e produce `(percorso, bytes)` per OGNI file reale,
+    **ricorrendo dentro gli ZIP annidati** a qualsiasi profondità (fino a
+    `_ZIP_MAX_DEPTH`). Esclude solo il junk macOS (`__MACOSX/`, `._*`, `.DS_Store`).
+
+    Il percorso restituito è il path interno completo (con prefisso dello zip
+    annidato), così i nomi restano significativi e unici.
+    """
+    if _depth > _ZIP_MAX_DEPTH:
+        if on_warn:
+            on_warn(f"max ZIP nesting depth {_ZIP_MAX_DEPTH} superata a {_prefix}")
+        return
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
+    except Exception as e:
+        if on_warn:
+            on_warn(f"non è un ZIP valido ({_prefix or 'root'}): {e}")
+        return
+
+    emitted = 0
+    with zf:
+        for raw_name in zf.namelist():
+            if raw_name.endswith("/") or _is_zip_junk(raw_name):
+                continue
+            display = _repair_zip_name(raw_name)
+            try:
+                data = zf.read(raw_name)
+            except Exception as e:
+                if on_warn:
+                    on_warn(f"illeggibile {display}: {e}")
+                continue
+            if raw_name.lower().endswith(".zip"):
+                # ZIP annidato → ricorsione (i bytes sono già in memoria)
+                yield from iter_zip_files(
+                    data, _depth=_depth + 1, _prefix=f"{_prefix}{display}/",
+                    on_warn=on_warn,
+                )
+            else:
+                yield (f"{_prefix}{display}", data)
+                emitted += 1
+                if emitted > _ZIP_MAX_FILES:
+                    if on_warn:
+                        on_warn(f"oltre {_ZIP_MAX_FILES} file in {_prefix or 'root'} — troncato")
+                    return
 
 
 # Sprint R1 — a page is considered "scanned" (no usable native text) when its

@@ -52,6 +52,9 @@ RETRY_BASE_DELAY_SECONDS = 2.0
 RETRY_MAX_DELAY_SECONDS = 60.0
 INTER_CHUNK_TIMEOUT = 90.0
 
+# Seed fisso per riproducibilità best-effort dei verdetti (stabilità run-to-run).
+_LLM_SEED = int(os.environ.get("LLM_SEED", "42"))
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Cap caratteri per documento (scalati dal profile.doc_cap_multiplier)
@@ -225,13 +228,19 @@ class AzureOpenAIClientV2:
         messages: List[Dict[str, str]],
         max_tokens: Optional[int] = None,
     ):
-        """Yields stream chunk objects (OpenAI SDK)."""
+        """Yields stream chunk objects (OpenAI SDK).
+
+        `seed` fisso + temperature 0 → output il più riproducibile possibile
+        (best-effort: Azure non garantisce determinismo totale fra nodi diversi,
+        ma riduce nettamente la variabilità run-to-run dei verdetti). Override
+        via env `LLM_SEED`."""
         return self._sdk.chat.completions.create(
             model=self.deployment,
             messages=messages,
             stream=True,
             stream_options={"include_usage": True},
             temperature=0.0,
+            seed=_LLM_SEED,
             max_tokens=max_tokens or self.profile.max_output_tokens,
         )
 

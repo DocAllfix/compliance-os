@@ -78,6 +78,10 @@ GAP_RETRIEVAL_TOP_K_CRITICAL = 8
 # missed the relevant cards. The expanded retrieval cap protects us against
 # very large card sets (e.g. >100 docs).
 GAP_RETRIEVAL_FALLBACK_CAP = 20
+# Fix retrieval (2026-06-14): cap della lista evidenze quando si fondono le card
+# taggate alla clausola (Phase 2 `iso_clause_primary`) col retrieval semantico.
+# Tiene il prompt limitato anche per clausole con molte card pertinenti.
+GAP_RETRIEVAL_TAG_CAP = 12
 
 # Severity ordering used by the floor application
 _SEVERITY_ORDER = {
@@ -449,21 +453,103 @@ def _sort_clauses_by_criticality(clause_list: List[Dict[str, Any]]) -> List[Dict
     )
 
 
+_CLAUSE_NUM_RE = re.compile(r"\d+\.\d+(?:\.\d+)?")
+
+
+def _clause_number_from_id(clause_id: str) -> str:
+    """'9001_7_2' -> '7.2', '14001_6_1_2' -> '6.1.2'. Toglie il prefisso norma."""
+    parts = str(clause_id or "").split("_")
+    return ".".join(parts[1:]) if len(parts) > 1 else str(clause_id or "")
+
+
+def _extract_clause_numbers(text: str) -> set:
+    """Numeri di clausola in un `iso_clause_primary` LLM (es. 'ISO 9001 §7.2').
+    Per un X.Y.Z aggiunge anche il padre X.Y, così una card §7.2.1 aggancia la
+    clausola 7.2."""
+    nums: set = set()
+    for m in _CLAUSE_NUM_RE.findall(text or ""):
+        nums.add(m)
+        bits = m.split(".")
+        if len(bits) == 3:
+            nums.add(".".join(bits[:2]))
+    return nums
+
+
+def build_cards_by_clause(cards_by_id: Dict[str, Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    """Mappa numero-clausola → card, dai tag della Phase 2. Riconnette la
+    classificazione (ottima) al retrieval di Phase 3, che altrimenti la ignora.
+
+    Usa SIA `iso_clause_primary` SIA `iso_clauses_secondary` (un documento può
+    valere per più clausole — es. il registro fornitori è §8.4 primario ma anche
+    §7.5 informazioni documentate e §9.1 monitoraggio). Le card primarie hanno
+    priorità nell'ordine (vengono prima nel merge col semantico)."""
+    primary: Dict[str, List[Dict[str, Any]]] = {}
+    secondary: Dict[str, List[Dict[str, Any]]] = {}
+    for card in cards_by_id.values():
+        for num in _extract_clause_numbers(str(card.get("iso_clause_primary", ""))):
+            primary.setdefault(num, []).append(card)
+        for sec in (card.get("iso_clauses_secondary") or []):
+            for num in _extract_clause_numbers(str(sec)):
+                secondary.setdefault(num, []).append(card)
+
+    out: Dict[str, List[Dict[str, Any]]] = {}
+    for num in set(primary) | set(secondary):
+        seen: set = set()
+        merged: List[Dict[str, Any]] = []
+        for card in primary.get(num, []) + secondary.get(num, []):
+            eid = str(card.get("evidence_id", ""))
+            if eid and eid not in seen:
+                seen.add(eid)
+                merged.append(card)
+        out[num] = merged
+    return out
+
+
+def _card_to_evidence(card: Dict[str, Any]) -> Dict[str, Any]:
+    """Converte una evidence card (Phase 2) in una entry della stessa forma dei
+    risultati di retrieval, così si fonde col semantico e il prompt la rende
+    identica. L'excerpt usa il summary inglese (segnale pulito)."""
+    excerpts = card.get("excerpts") or []
+    pages: List[int] = []
+    if excerpts and isinstance(excerpts[0], dict):
+        pages = [int(p) for p in (excerpts[0].get("pages") or []) if str(p).isdigit()]
+    excerpt = str(card.get("summary", "") or "")
+    if not excerpt and excerpts and isinstance(excerpts[0], dict):
+        excerpt = str(excerpts[0].get("text", "") or "")
+    return {
+        "evidence_id":        str(card.get("evidence_id", "")),
+        "file_name":          str(card.get("file_name", "")),
+        "doc_type":           str(card.get("doc_type", "other")),
+        "iso_clause_primary": str(card.get("iso_clause_primary", "")),
+        "gap_signal":         bool(card.get("gap_signal", False)),
+        "confidence":         float(card.get("confidence", 0.5) or 0.5),
+        "chunk_kind":         "summary",
+        "pages":              pages,
+        "excerpt":            excerpt[:1500],
+        "distance":           0.0,   # tag-match → priorità massima
+    }
+
+
 def _retrieve_with_fallback(
     evidence_service: EvidenceService,
     clause: Dict[str, Any],
+    tagged_cards: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
-    """Sprint I.C — retrieval that defends against the two main false-negative
-    patterns observed in production:
+    """Retrieval ibrido (fix 2026-06-14): combina
 
-      1. Critical/SPoF clauses get a wider retrieval window (TOP_K=8 vs 4) so
-         that, when the top-4 by cosine similarity happen to be irrelevant,
-         the next 4 still have a chance to surface the truly pertinent cards.
+      0. **Inclusione garantita per tag**: le card che la Phase 2 ha classificato
+         su questa clausola (`iso_clause_primary`) sono SEMPRE incluse. Riconnette
+         la classificazione al retrieval, che da solo (semantico puro) lasciava
+         clausole con evidenza reale a 0-1 card → falsi MAJOR.
 
-      2. If retrieval returns zero results AT ALL, we retry with a much larger
-         window (up to GAP_RETRIEVAL_FALLBACK_CAP cards). This handles the
-         pathological "ChromaDB returned nothing usable" case where the first
-         pass missed the relevant evidence purely on similarity ranking.
+      1. Critical/SPoF clauses → finestra semantica più ampia (TOP_K=8 vs 4).
+
+      2. Se tutto è vuoto → retry semantico con cap largo (anti "no evidence"
+         da ranking sfortunato).
+
+    Additivo: il semantico è invariato; le card taggate si aggiungono e
+    de-duplicano per evidence_id. Se non esiste alcuna card taggata (assenza
+    reale), il comportamento è identico a prima → MAJOR corretto.
     """
     is_critical = bool(
         clause.get("is_spof", False)
@@ -471,16 +557,23 @@ def _retrieve_with_fallback(
     )
     top_k = GAP_RETRIEVAL_TOP_K_CRITICAL if is_critical else GAP_RETRIEVAL_TOP_K
 
-    # Sprint R2 — with chunk-level indexing the top-K can be saturated by
-    # several chunks of the same document. Over-fetch and diversify: keep at
-    # most 2 chunks per evidence_id so the LLM sees breadth AND depth.
+    # Sprint R2 — over-fetch e diversify: max 2 chunk per evidence_id.
     raw_results = evidence_service.get_evidences_for_clause(clause, n=top_k * 2)
-    results = _diversify_chunks(raw_results, max_per_doc=2, cap=top_k)
+    semantic = _diversify_chunks(raw_results, max_per_doc=2, cap=top_k)
 
-    # Fallback: if first pass returned nothing, retry with the broader cap.
-    # Doing this only on empty results keeps the cost bounded — we don't pay
-    # the wider retrieval on every clause, only on the ones that would
-    # otherwise be wrongly marked "no evidence".
+    # Fix 2026-06-14 — fusione con le card taggate alla clausola (prima, perché
+    # garantite pertinenti), poi il semantico non già incluso (dedup evidence_id).
+    tagged_cards = tagged_cards or []
+    if tagged_cards:
+        tag_entries = [_card_to_evidence(c) for c in tagged_cards if c.get("evidence_id")]
+        seen = {e["evidence_id"] for e in tag_entries}
+        merged = tag_entries + [r for r in semantic if str(r.get("evidence_id", "")) not in seen]
+        cap = min(max(top_k, len(tag_entries) + 2), GAP_RETRIEVAL_TAG_CAP)
+        results = _diversify_chunks(merged, max_per_doc=2, cap=cap)
+    else:
+        results = semantic
+
+    # Fallback: se ancora vuoto, retry semantico con cap largo.
     if not results:
         raw_results = evidence_service.get_evidences_for_clause(
             clause, n=GAP_RETRIEVAL_FALLBACK_CAP,
@@ -497,6 +590,33 @@ def _retrieve_with_fallback(
             )
 
     return results
+
+
+def _calibrate_blob_severity(gap: ClauseGap) -> ClauseGap:
+    """Calibrazione simmetrica per le clausole SENZA atomic_requirements.
+
+    Le clausole con atomic_requirements ricevono il credito parziale in Stage B
+    (MAJOR→MINOR se il processo è evidenziato). Le clausole senza atomic
+    requirements vengono valutate solo dal punteggio "blob" di Stage A e possono
+    restare MAJOR pur avendo evidenza citata — incoerente. Qui si applica lo
+    stesso principio: se un MAJOR blob ha evidenza reale (≥1 citazione) →
+    documentato-ma-incompleto → MINOR. Assenza vera (nessuna citazione) → MAJOR.
+
+    Tocca SOLO i MAJOR senza requirement_checks: i verdetti con atomic checks e
+    i non-MAJOR restano invariati.
+    """
+    if gap.severity != "MAJOR" or gap.requirement_checks:
+        return gap
+    if gap.sources:
+        gap.severity = "MINOR"
+        gap.score = max(gap.score, 35)
+        gap.is_spof = False
+        if not gap.hedged:
+            gap.hedged = True
+            note = ("Relevant documentation is present but does not fully cover "
+                    "the clause: downgraded from major to minor.")
+            gap.hedge_note = (gap.hedge_note + " " + note).strip() if gap.hedge_note else note
+    return gap
 
 
 def _diversify_chunks(
@@ -535,6 +655,10 @@ def _analyse_norm(
 ) -> List[ClauseGap]:
     clause_list = _sort_clauses_by_criticality(list(clauses.values()))
 
+    # Fix retrieval (2026-06-14) — indice numero-clausola → card dal tag
+    # `iso_clause_primary` della Phase 2, per l'inclusione garantita nel retrieval.
+    cards_by_clause = build_cards_by_clause(cards_by_id)
+
     # Sprint R4 — pct budget split: Stage A (batched screening) takes 55%,
     # Stage B (deep verification on full documents) the remaining 45%.
     stage_a_budget = pct_budget * 0.55 if docs_by_name else pct_budget
@@ -565,7 +689,13 @@ def _analyse_norm(
         #       larger n so we don't declare "no evidence" just because the
         #       semantic similarity ranking happened to miss the relevant cards
         clause_evidences: List[tuple] = [
-            (clause, _retrieve_with_fallback(evidence_service, clause))
+            (
+                clause,
+                _retrieve_with_fallback(
+                    evidence_service, clause,
+                    tagged_cards=cards_by_clause.get(_clause_number_from_id(clause["id"]), []),
+                ),
+            )
             for clause in batch
         ]
 
@@ -610,6 +740,14 @@ def _analyse_norm(
         except Exception as e:
             _log.warning("[Deep] Stage B failed for %s (%s) — Stage A verdicts kept",
                          norm, str(e)[:200])
+
+    # ── Calibrazione finale uniforme (2026-06-14, Opzione B) ─────────────────
+    # Principio unico: MAJOR = assenza vera di evidenza; documentato-ma-incompleto
+    # = MINOR. Le clausole CON atomic_requirements sono già calibrate dal credito
+    # parziale in Stage B; qui si chiude la simmetria sulle clausole SENZA atomic
+    # requirements (blob-scored da Stage A), che altrimenti restano MAJOR pur
+    # avendo evidenza. Le assenze vere (nessuna citazione) restano MAJOR.
+    all_gaps = [_calibrate_blob_severity(g) for g in all_gaps]
 
     return all_gaps
 
@@ -1022,6 +1160,20 @@ def _apply_severity_floor(
     floor = get_severity_floor(clause)
     if floor is None:
         return gap
+
+    # Calibrazione 2026-06-14 (Opzione B) — floor softening: il floor NON forza
+    # più MAJOR quando la clausola ha evidenza reale (almeno una citazione, o un
+    # atomic requirement PRESENT/PARTIAL). Distingue "assenza vera" (nessuna
+    # evidenza → MAJOR legittimo) da "processo evidenziato ma incompleto"
+    # (→ al massimo MINOR). Il floor continua a escalare verso MINOR e resta
+    # MAJOR solo dove non c'è nulla.
+    if floor == "MAJOR":
+        checks = gap.requirement_checks or []
+        has_evidence = bool(gap.sources) or any(
+            getattr(c, "status", "") in ("PRESENT", "PARTIAL") for c in checks
+        )
+        if has_evidence:
+            floor = "MINOR"
 
     # Preserve genuine CONFORMANT verdicts (must have at least one cited source)
     if gap.severity == "CONFORMANT" and gap.sources:
