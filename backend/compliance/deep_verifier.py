@@ -44,7 +44,11 @@ _log = logging.getLogger("compliance.deep_verifier")
 # (Data Zone EU). Override via env per quote diverse.
 DEEP_MAX_WORKERS = int(os.environ.get("DEEP_MAX_WORKERS", "6"))
 DEEP_MAX_DOCS = 3                 # full documents per clause prompt
-DEEP_MAX_DOC_CHARS = 60_000       # per-document cap inside the prompt
+# 90k: i documenti medio-lunghi (es. verbali verifiche ~83k) entrano INTERI nella
+# deep-verification, senza che il campionamento testa+coda tagli il centro (dove può
+# stare l'evidenza). Solo i documenti davvero giganti (>90k, es. DVR 224k) vengono
+# campionati testa+coda da `_sample_long_doc`. ~22k token/doc × 3 = dentro la quota.
+DEEP_MAX_DOC_CHARS = 90_000       # per-document cap inside the prompt
 DEEP_MAX_OUTPUT_TOKENS = 3000
 DEEP_CONFIDENCE_THRESHOLD = 0.6   # Stage A confidence below this → deep pass
 
@@ -307,12 +311,15 @@ def _select_documents(
 ) -> List[str]:
     """
     Pick up to DEEP_MAX_DOCS documents to read in full, in priority order:
-      1. documents the Phase 2 cards TAGGED on this clause (iso_clause_primary/
-         secondary) — the most reliably clause-relevant (Hardening 2026 #3 raffin.);
-      2. documents already cited by Stage A;
-      3. chunk-retrieval hits for breadth.
-    Per le clausole genuinamente assenti non esistono card taggate → si ricade su
-    (2)+(3), comportamento invariato. Returns normalised keys present in docs_by_name.
+      1. documents already cited by Stage A (lo screening contestuale: per le
+         clausole CON evidenza è la scelta giusta — es. §9.1 cita le verifiche);
+      2. chunk-retrieval hits for breadth;
+      3. documents TAGGED dalla Phase 2 sulla clausola, come AGGIUNTA finale se i
+         primi due non hanno riempito i posti.
+    Hardening 2026 #3 (corretto): i tagged NON vengono più messi per primi — lo
+    facevano spiazzare le citazioni Stage A corrette (regressione vista su §9.1, la
+    cui evidenza è taggata §8.5, non §9.1). Ora i tagged solo additivi → nessun danno.
+    Returns normalised keys present in docs_by_name.
     """
     chosen: List[str] = []
 
@@ -321,10 +328,6 @@ def _select_documents(
         if key in docs_by_name and key not in chosen:
             chosen.append(key)
         return len(chosen) >= DEEP_MAX_DOCS
-
-    for fn in (tagged_docs or []):
-        if _add(fn):
-            return chosen
 
     for src in gap.sources:
         if _add(src.file_name):
@@ -337,7 +340,11 @@ def _select_documents(
             hits = []
         for hit in hits:
             if _add(hit.get("file_name", "")):
-                break
+                return chosen
+
+    for fn in (tagged_docs or []):
+        if _add(fn):
+            break
 
     return chosen
 

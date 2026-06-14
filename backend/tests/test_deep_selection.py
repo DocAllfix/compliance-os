@@ -41,12 +41,23 @@ def _src(fname):
     return TraceabilityLink(evidence_id="e", file_name=fname, pages=[1], excerpt="x", relevance_score=0.5)
 
 
-def test_tagged_docs_take_priority():
+def test_stage_a_citation_first_tagged_additive():
+    # ordine corretto: citazione Stage A PRIMA (non spiazzata dai tagged); i tagged
+    # si aggiungono dopo. Evita la regressione §9.1 (evidenza taggata altrove).
     docs = {_norm_name("suppliers.pdf"): "x", _norm_name("stage_a_cite.pdf"): "y"}
     gap = _gap([_src("stage_a_cite.pdf")])
     chosen = _select_documents({"id": "9001_8_4"}, gap, docs, None,
                                tagged_docs=["suppliers.pdf"])
-    assert chosen[0] == _norm_name("suppliers.pdf")  # taggato prima della citazione
+    assert chosen[0] == _norm_name("stage_a_cite.pdf")     # Stage A per prima
+    assert _norm_name("suppliers.pdf") in chosen            # tagged aggiunto dopo
+
+
+def test_tagged_used_when_no_stage_a_no_retrieval():
+    docs = {_norm_name("tagged.pdf"): "x"}
+    gap = _gap([])  # nessuna citazione Stage A
+    chosen = _select_documents({"id": "9001_8_4"}, gap, docs, None,
+                               tagged_docs=["tagged.pdf"])
+    assert chosen == [_norm_name("tagged.pdf")]  # tagged come fallback additivo
 
 
 def test_falls_back_to_stage_a_when_no_tagged():
