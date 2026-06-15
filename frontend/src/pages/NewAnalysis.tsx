@@ -320,6 +320,14 @@ function Step2Source({
         </div>
       )}
 
+      {source === 'zip' && (
+        <p style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 10 }}>
+          These documents will also be saved to your document library (DMS), filed
+          under a folder named after the company — re-analysing the same company keeps
+          a version history automatically.
+        </p>
+      )}
+
       <footer className="form-footer">
         <div className="progress-text">
           {source === 'dms'

@@ -25,6 +25,13 @@ const SUGGESTIONS_GENERAL = [
   'How is a single point of failure (SPoF) identified?',
 ];
 
+const SUGGESTIONS_ALL = [
+  'Which nonconformities are most pressing across all my companies?',
+  'Which documents do the major nonconformities reference?',
+  'Which company is closest to certification readiness?',
+  'List every company missing a quality policy (§5.2)',
+];
+
 const REFUSAL_PATTERN = /^no evidence in this audit/i;
 
 function FileIcon() {
@@ -150,7 +157,8 @@ export function ChatPanel({ scope, variant = 'page', emptyHint }: Props) {
   const { turns, isSending, sendMessage } = useChat(scope);
   const [composer, setComposer] = useState('');
   const threadEndRef = useRef<HTMLDivElement>(null);
-  const SUGGESTIONS = scope === 'general' ? SUGGESTIONS_GENERAL : SUGGESTIONS_ANALYSIS;
+  const SUGGESTIONS = scope === 'all' ? SUGGESTIONS_ALL
+    : scope === 'general' ? SUGGESTIONS_GENERAL : SUGGESTIONS_ANALYSIS;
 
   useEffect(() => {
     threadEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
@@ -178,13 +186,17 @@ export function ChatPanel({ scope, variant = 'page', emptyHint }: Props) {
             <div className="conv-welcome">
               <p>
                 {emptyHint ??
-                  (scope === 'general'
+                  (scope === 'all'
+                    ? 'Ask anything across ALL your analyses and documents. The analyst knows every company you have assessed and cites the documents and nonconformities behind each answer.'
+                    : scope === 'general'
                     ? 'Ask anything about ISO 9001, 14001, or 45001 in general. This conversation is not grounded on a specific analysis.'
                     : 'Ask anything about this analysis. Answers cite the underlying documents and ISO clauses.')}
               </p>
               <p style={{ marginTop: 8, color: 'var(--text-tertiary)', fontSize: 13 }}>
-                {scope === 'general'
-                  ? 'For questions about your own documents, open one of your analyses and ask from there.'
+                {scope === 'all'
+                  ? 'Spanning every company in your account. The analyst will say plainly when something is not in your data.'
+                  : scope === 'general'
+                  ? 'For questions about your own documents, switch to “All my data”, or open one of your analyses.'
                   : "If the question cannot be answered from the evidence available, the analyst will say so plainly."}
               </p>
             </div>
@@ -211,7 +223,9 @@ export function ChatPanel({ scope, variant = 'page', emptyHint }: Props) {
             className="composer-input"
             rows={2}
             placeholder={
-              scope === 'general'
+              scope === 'all'
+                ? 'Ask across all your companies — NCs, documents, what to fix first…'
+                : scope === 'general'
                 ? 'Ask about ISO clauses, severity, audit prep…'
                 : 'Ask anything about this analysis. Answers will cite your documents.'
             }

@@ -252,7 +252,24 @@ async def compliance_analyze(
         norms=norms_list,
     )
 
-    return _pipeline_sse_response(context=context, username=username, zip_bytes=file_bytes)
+    def _to_dms(result, outcome) -> None:
+        """DMS unificato — popola il DMS dai documenti analizzati (cartella =
+        azienda), riusando il testo già estratto (no re-OCR). Non-bloccante."""
+        from modules.dms_ingest import ingest_analysis, DMS_AUTOSAVE
+        if not DMS_AUTOSAVE:
+            return
+        try:
+            stats = ingest_analysis(
+                owner=username, company_name=company_name, zip_bytes=file_bytes,
+                analysis_id=result.analysis_id, evidence_yaml=outcome.get("evidence_yaml") or "",
+            )
+            _audit(username, "analysis_to_dms", "analysis", result.analysis_id, stats)
+        except Exception as e:
+            logger.warning(f"[Compliance] analysis→DMS ingest failed (non-blocking): {e}")
+
+    return _pipeline_sse_response(
+        context=context, username=username, zip_bytes=file_bytes, on_success=_to_dms,
+    )
 
 
 class AnalyzeDmsRequest(BaseModel):
@@ -575,6 +592,7 @@ class ChatRequest(BaseModel):
     analysis_id: Optional[str] = None  # Sprint G.4: opzionale → chat "general" senza grounding
     query: str
     conversation_id: Optional[str] = None
+    scope: Optional[str] = None         # "all" → analista onnisciente su TUTTE le analisi
     # Fase 6 — multi-turn: gli ultimi turni della conversazione (max 6 usati).
     # La history è CONTESTO conversazionale, mai fonte di evidenza.
     messages: Optional[List[ChatTurnIn]] = None
@@ -636,6 +654,132 @@ def _call_chat_llm(sys_prompt: str, user_prompt: str, max_tokens: int = 800) -> 
     return "".join(chunks).strip()
 
 
+async def _chat_account_wide(req: "ChatRequest", user: Dict, history_block: str) -> "ChatResponse":
+    """Analista onnisciente (scope='all'): aggrega le evidence card di TUTTE le
+    analisi dell'utente + il registro NC con i documenti citati, indicizza e
+    risponde citando azienda↔documento↔non-conformità. Ownership: solo le analisi
+    dell'utente (admin vede tutto)."""
+    from pathlib import Path as _Path
+    import json as _json
+    from compliance.schemas import ComplianceAnalysisResult
+    from compliance.evidence_service import EvidenceService
+    from compliance.gap_analyzer import _parse_evidence_yaml
+    from modules.db_manager import get_connection
+
+    username = user["username"]
+    conn = get_connection()
+    try:
+        if user.get("role") == "admin":
+            rows = conn.execute(
+                "SELECT id, company, result_json, evidence_yaml FROM compliance_analyses "
+                "ORDER BY analysis_date DESC LIMIT 25"
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, company, result_json, evidence_yaml FROM compliance_analyses "
+                "WHERE user_id = ? ORDER BY analysis_date DESC LIMIT 25", (username,)
+            ).fetchall()
+    finally:
+        conn.close()
+
+    if not rows:
+        return ChatResponse(analysis_id=None, sources=[], response=(
+            "There are no analyses in your account yet, so I have no audit data to "
+            "reason over. Run an analysis first, then ask me here."))
+
+    MAX_CARDS = 800
+    cards: List[Dict[str, Any]] = []
+    summary_lines: List[str] = ["## Companies and analyses in scope"]
+    nc_items: List[tuple] = []   # (sev_rank, company, clause_id, severity, finding, docs)
+    sev_rank = {"MAJOR": 0, "MINOR": 1}
+
+    for row in rows:
+        company = str(row["company"] or "?")
+        try:
+            data = _json.loads(row["result_json"]) if isinstance(row["result_json"], str) else row["result_json"]
+            result = ComplianceAnalysisResult(**data)
+        except Exception:
+            continue
+        for n in result.norms:
+            summary_lines.append(
+                f"- {company} — {n.norm}: {n.major_count} MAJOR / {n.minor_count} MINOR / "
+                f"{n.observation_count} OBS / {n.conformant_count} CONF, score {n.overall_score}"
+            )
+        ey = row["evidence_yaml"] or ""
+        if ey.strip() and len(cards) < MAX_CARDS:
+            try:
+                for c in _parse_evidence_yaml(ey):
+                    if not c.get("evidence_id"):
+                        continue
+                    c = dict(c)
+                    c["evidence_id"] = f"{row['id']}::{c['evidence_id']}"
+                    c["file_name"] = f"[{company}] {c.get('file_name', '')}"
+                    cards.append(c)
+                    if len(cards) >= MAX_CARDS:
+                        break
+            except Exception:
+                pass
+        for n in result.norms:
+            for cl in n.clauses:
+                if cl.severity in ("MAJOR", "MINOR"):
+                    docs = ", ".join(sorted({s.file_name for s in (cl.sources or []) if s.file_name})) or "(no document cited)"
+                    nc_items.append((sev_rank.get(cl.severity, 2), company, cl.clause_id,
+                                     cl.severity, (cl.finding or "")[:160], docs))
+
+    nc_items.sort(key=lambda x: x[0])
+    nc_lines: List[str] = ["## Nonconformity register (open NCs across all analyses) — NC ↔ documents"]
+    for _, comp, cid, sev, finding, docs in nc_items[:60]:
+        nc_lines.append(f"- [{comp}] {cid} {sev}: {finding} — documents: {docs}")
+    if len(nc_items) > 60:
+        nc_lines.append(f"- … and {len(nc_items) - 60} more open NCs")
+
+    retrieved: List[Dict[str, Any]] = []
+    if cards:
+        service = await asyncio.to_thread(EvidenceService.from_cards, f"account_{username}", cards)
+        try:
+            retrieved = await asyncio.to_thread(service.get_evidences_similar_to, req.query, 8)
+        finally:
+            try:
+                service.close()
+            except Exception:
+                pass
+
+    prompt_path = _Path(__file__).parent / "prompts" / "compliance" / "chat_account.md"
+    try:
+        sys_prompt = prompt_path.read_text(encoding="utf-8")
+    except Exception:
+        sys_prompt = ("You are the Amisys QHSE analyst with knowledge of ALL the user's "
+                      "analyses. Cite documents and nonconformities; UK English; never invent.")
+
+    evidence_lines = ["## Retrieved evidence (across all analyses)"]
+    for ev in retrieved:
+        evidence_lines.append("---")
+        evidence_lines.append(f"file_name: {ev.get('file_name', '')}")
+        evidence_lines.append(f"iso_clause_primary: {ev.get('iso_clause_primary', '')}")
+        evidence_lines.append(f"excerpt: {str(ev.get('excerpt', ''))[:400]}")
+
+    user_prompt = (
+        "\n".join(summary_lines) + "\n\n"
+        + "\n".join(nc_lines) + "\n\n"
+        + "\n".join(evidence_lines) + "\n\n"
+        + (history_block or "## User question\n") + req.query.strip()
+    )
+    try:
+        response_text = await asyncio.to_thread(_call_chat_llm, sys_prompt, user_prompt, 1000)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"LLM provider failed: {e}")
+
+    sources_out = [ChatSource(
+        evidence_id=str(ev.get("evidence_id", "")),
+        file_name=str(ev.get("file_name", "")),
+        excerpt=str(ev.get("excerpt", ""))[:300],
+        iso_clause_primary=str(ev.get("iso_clause_primary", "")),
+        relevance_score=float(1.0 - float(ev.get("distance", 0.5))),
+    ) for ev in retrieved]
+    return ChatResponse(analysis_id=None, response=response_text or "No response generated.",
+                        sources=sources_out)
+
+
 @app.post("/api/compliance/chat", response_model=ChatResponse)
 async def compliance_chat(
     req: ChatRequest,
@@ -658,6 +802,10 @@ async def compliance_chat(
     from pathlib import Path as _Path
 
     history_block = _chat_history_block(req.messages)
+
+    # ─── Branch account-wide (analista onnisciente su TUTTE le analisi) ──
+    if (req.scope or "").strip().lower() == "all":
+        return await _chat_account_wide(req, user, history_block)
 
     # ─── Branch general (no grounding) ──────────────────────────────────
     if req.analysis_id is None or req.analysis_id.strip() == "":

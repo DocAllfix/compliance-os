@@ -440,6 +440,24 @@ def load_analysis_corpus(analysis_id: str) -> List[Dict]:
     return docs
 
 
+def set_corpus_dms_link(analysis_id: str, filename: str, dms_document_id: int,
+                        dms_version: int) -> bool:
+    """Collega una riga del corpus (analysis_documents) al documento DMS creato
+    dall'ingest analisi→DMS. Provenienza: l'analisi sa QUALE doc/versione DMS ha
+    prodotto, così il Compare longitudinale diventa per-versione."""
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            "UPDATE analysis_documents SET dms_document_id = ?, dms_version = ? "
+            "WHERE analysis_id = ? AND filename = ?",
+            (dms_document_id, dms_version, analysis_id, filename),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
 # ==============================================================================
 # REGISTRO NONCONFORMITÀ (Fase 4 — PRD §1.4.8)
 # ==============================================================================

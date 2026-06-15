@@ -99,7 +99,10 @@ export function useChat(scope: ChatScope): UseChatResult {
 
         const reqBody = {
           query: trimmed,
-          analysis_id: scope === 'general' ? null : scope,
+          // 'all' → analista onnisciente (tutte le analisi); 'general' → ISO generico;
+          // altrimenti grounded sulla singola analisi (scope = analysisId).
+          analysis_id: (scope === 'general' || scope === 'all') ? null : scope,
+          ...(scope === 'all' ? { scope: 'all' as const } : {}),
           messages: history,
         };
         const resp = await compliance.chat(reqBody as Parameters<typeof compliance.chat>[0]);

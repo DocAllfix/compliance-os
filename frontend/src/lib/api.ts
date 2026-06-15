@@ -291,6 +291,7 @@ export interface ChatRequest {
   analysis_id: string | null;        // null → chat general senza grounding
   query: string;
   conversation_id?: string | null;
+  scope?: 'all';                     // 'all' → analista onnisciente su tutte le analisi
   // Fase 6 — multi-turn: ultimi turni (max 6 usati dal backend) come contesto
   messages?: { role: 'user' | 'assistant'; content: string }[];
 }

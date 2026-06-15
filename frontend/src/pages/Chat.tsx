@@ -47,7 +47,7 @@ function FileIcon() {
 
 export function Chat() {
   const [searchParams] = useSearchParams();
-  const initialScope: ChatScope = searchParams.get('analysis') ?? 'general';
+  const initialScope: ChatScope = searchParams.get('analysis') ?? 'all';
   const [scope, setScope] = useState<ChatScope>(initialScope);
   const { toggleTheme } = useTheme();
   const navigate = useNavigate();
@@ -61,17 +61,18 @@ export function Chat() {
     if (want && want !== scope) {
       setScope(want);
     }
-    if (!want && scope !== 'general' && !store.getThreads(scope).length) {
+    if (!want && scope !== 'general' && scope !== 'all' && !store.getThreads(scope).length) {
       // se l'utente naviga via senza ?analysis e lo scope corrente non ha thread, default
-      setScope('general');
+      setScope('all');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
   const allScopes = store.allScopes();
   const generalThreads = store.getThreads('general');
+  const accountThreads = store.getThreads('all');
   // Per ogni analysisId con threads, prepariamo il company name dalla cache analisi
-  const analysisIdsWithThreads = allScopes.filter((s) => s !== 'general');
+  const analysisIdsWithThreads = allScopes.filter((s) => s !== 'general' && s !== 'all');
   const analyses = analysesQuery.data ?? [];
 
   const companyOf = useMemo(() => {
@@ -81,8 +82,10 @@ export function Chat() {
   }, [analyses]);
 
   const currentScopeLabel =
-    scope === 'general'
-      ? 'General conversation'
+    scope === 'all'
+      ? 'All my data'
+      : scope === 'general'
+      ? 'General ISO advisor'
       : companyOf.get(scope) ?? `Analysis ${scope.slice(-8)}`;
 
   const activeThreadTitle = useMemo(() => {
@@ -139,6 +142,35 @@ export function Chat() {
           New {scope === 'general' ? 'general ' : ''}conversation
         </button>
 
+        {/* Group: All my data (analista onnisciente) */}
+        <div className="thread-section-label">
+          <FileIcon />
+          Your data
+        </div>
+        <button
+          type="button"
+          className={`scope-pill${scope === 'all' ? ' active' : ''}`}
+          onClick={() => handleSelectScope('all')}
+          title="The analyst sees every analysis and every analysed document"
+        >
+          <span className="scope-pill-name">All my data</span>
+          <span className="scope-pill-count">{accountThreads.length}</span>
+        </button>
+        {scope === 'all' &&
+          accountThreads.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              className={`thread-item${t.id === activeThreadId ? ' active' : ''}`}
+              onClick={() => selectThread(t.id)}
+            >
+              <div className="thread-item-q">{t.title}</div>
+              <div className="thread-item-meta">
+                <span>{t.turns.length} message{t.turns.length === 1 ? '' : 's'}</span>
+              </div>
+            </button>
+          ))}
+
         {/* Group: General */}
         <div className="thread-section-label">
           <ChatBubbleIcon />
@@ -149,7 +181,7 @@ export function Chat() {
           className={`scope-pill${scope === 'general' ? ' active' : ''}`}
           onClick={() => handleSelectScope('general')}
         >
-          <span className="scope-pill-name">General conversation</span>
+          <span className="scope-pill-name">General ISO advisor</span>
           <span className="scope-pill-count">{generalThreads.length}</span>
         </button>
         {scope === 'general' &&
