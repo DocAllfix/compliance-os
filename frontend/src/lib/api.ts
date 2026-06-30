@@ -800,7 +800,7 @@ function _sleep(ms: number): Promise<void> {
 /** Snapshot degli id analisi correnti, per riconoscere quella nuova dopo un drop. */
 async function _snapshotAnalysisIds(): Promise<Set<string>> {
   try {
-    const list = await api.listAnalyses();
+    const list = await compliance.listAnalyses();
     return new Set(list.map((a) => a.id));
   } catch {
     return new Set();
@@ -823,7 +823,7 @@ async function _recoverAfterStreamDrop(
     await _sleep(6000);
     let list: AnalysisSummary[];
     try {
-      list = await api.listAnalyses();
+      list = await compliance.listAnalyses();
     } catch {
       continue; // backend momentaneamente non raggiungibile → riprova
     }
