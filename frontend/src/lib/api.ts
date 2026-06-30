@@ -685,12 +685,14 @@ export async function runAnalysis(
   form.append('sites_count', context.sites_count);
   form.append('norms', JSON.stringify(context.norms));
 
+  const before = await _snapshotAnalysisIds();
   const res = await fetch(`${BASE}/api/compliance/analyze`, {
     method: 'POST',
     headers: { ...authHeader() },
     body: form,
   });
-  await readSseStream(res, onEvent);
+  const terminal = await readSseStream(res, onEvent);
+  if (!terminal) await _recoverAfterStreamDrop(before, onEvent);
 }
 
 /**
@@ -702,11 +704,13 @@ export async function runReanalyse(
   analysisId: string,
   onEvent: (ev: SseEvent) => void,
 ): Promise<void> {
+  const before = await _snapshotAnalysisIds();
   const res = await fetch(`${BASE}/api/compliance/analyses/${encodeURIComponent(analysisId)}/reanalyse`, {
     method: 'POST',
     headers: { ...authHeader() },
   });
-  await readSseStream(res, onEvent);
+  const terminal = await readSseStream(res, onEvent);
+  if (!terminal) await _recoverAfterStreamDrop(before, onEvent);
 }
 
 export interface AnalyzeDmsRequest {
@@ -729,16 +733,24 @@ export async function runAnalyzeDms(
   req: AnalyzeDmsRequest,
   onEvent: (ev: SseEvent) => void,
 ): Promise<void> {
+  const before = await _snapshotAnalysisIds();
   const res = await fetch(`${BASE}/api/compliance/analyze-dms`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeader() },
     body: JSON.stringify(req),
   });
-  await readSseStream(res, onEvent);
+  const terminal = await readSseStream(res, onEvent);
+  if (!terminal) await _recoverAfterStreamDrop(before, onEvent);
 }
 
-/** Shared SSE frame reader (fetch body → parsed events). */
-async function readSseStream(res: Response, onEvent: (ev: SseEvent) => void): Promise<void> {
+/**
+ * Shared SSE frame reader (fetch body → parsed events).
+ * Returns `true` if a terminal event (done/error) was delivered. A mid-stream
+ * network drop is swallowed (returns `false`) instead of throwing: the backend
+ * completes and persists the analysis regardless, so the caller recovers by
+ * polling for the freshly-saved run rather than surfacing a "network error".
+ */
+async function readSseStream(res: Response, onEvent: (ev: SseEvent) => void): Promise<boolean> {
   if (!res.ok || !res.body) {
     const data = await res.json().catch(() => ({}));
     throw new ApiError(res.status, (data as { detail?: string }).detail ?? res.statusText, data);
@@ -747,29 +759,83 @@ async function readSseStream(res: Response, onEvent: (ev: SseEvent) => void): Pr
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let terminal = false;
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
 
-    // SSE frames separated by blank line
-    let idx: number;
-    while ((idx = buffer.indexOf('\n\n')) >= 0) {
-      const frame = buffer.slice(0, idx);
-      buffer = buffer.slice(idx + 2);
-      if (!frame.trim() || frame.startsWith(':')) continue; // keepalive comment
-      const dataLine = frame.split('\n').find((l) => l.startsWith('data: '));
-      if (!dataLine) continue;
-      const json = dataLine.slice(6).trim();
-      try {
-        const parsed = JSON.parse(json) as SseEvent;
-        onEvent(parsed);
-      } catch {
-        // ignore malformed frames
+      // SSE frames separated by blank line
+      let idx: number;
+      while ((idx = buffer.indexOf('\n\n')) >= 0) {
+        const frame = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        if (!frame.trim() || frame.startsWith(':')) continue; // keepalive comment
+        const dataLine = frame.split('\n').find((l) => l.startsWith('data: '));
+        if (!dataLine) continue;
+        const json = dataLine.slice(6).trim();
+        try {
+          const parsed = JSON.parse(json) as SseEvent;
+          if ('done' in parsed || 'error' in parsed) terminal = true;
+          onEvent(parsed);
+        } catch {
+          // ignore malformed frames
+        }
       }
     }
+  } catch {
+    // Connessione caduta a metà stream (es. "network error" su run lunghi dietro
+    // i proxy). NON propaghiamo: il run continua e viene salvato lato server.
   }
+
+  return terminal;
+}
+
+function _sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Snapshot degli id analisi correnti, per riconoscere quella nuova dopo un drop. */
+async function _snapshotAnalysisIds(): Promise<Set<string>> {
+  try {
+    const list = await api.listAnalyses();
+    return new Set(list.map((a) => a.id));
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * Recupero post-drop SSE. Il backend completa e PERSISTE l'analisi anche se lo
+ * stream cade (worker disaccoppiato dalla richiesta); qui attendiamo che la nuova
+ * analisi compaia nella lista e sintetizziamo l'evento done — così un run di ~10
+ * min non si trasforma in "network error" pur essendo arrivato in fondo.
+ */
+async function _recoverAfterStreamDrop(
+  beforeIds: Set<string>,
+  onEvent: (ev: SseEvent) => void,
+): Promise<void> {
+  onEvent({ pct: 96, msg: 'Connection dropped — the analysis is finishing on the server, recovering…' } as SseEvent);
+  const deadline = Date.now() + 12 * 60 * 1000; // attesa massima 12 min
+  while (Date.now() < deadline) {
+    await _sleep(6000);
+    let list: AnalysisSummary[];
+    try {
+      list = await api.listAnalyses();
+    } catch {
+      continue; // backend momentaneamente non raggiungibile → riprova
+    }
+    const fresh = list.find((a) => !beforeIds.has(a.id));
+    if (fresh) {
+      onEvent({ done: true, analysis_id: fresh.id } as SseDone);
+      return;
+    }
+  }
+  onEvent({
+    error: 'The analysis is taking longer than expected. It may still be completing — check the analyses list shortly.',
+  } as SseError);
 }
 
 export { ApiError };

@@ -39,6 +39,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import asyncio
 import concurrent.futures
+import threading
 
 # ── Moduli applicazione ────────────────────────────────────────────────────────
 # Fase 2 consolidamento: rimossi gli import legacy AUDITORSEMI (config checklist,
@@ -371,14 +372,31 @@ def _pipeline_sse_response(
     loop = asyncio.get_event_loop()
     queue: asyncio.Queue = asyncio.Queue()
 
+    def _put(event: Dict[str, Any]) -> None:
+        # Thread-safe handoff dal worker alla coda osservata dal generatore SSE.
+        # Resta valido anche se il client si è disconnesso: il put riesce, semplicemente
+        # nessuno lo drena (il lavoro è comunque già stato salvato a monte).
+        try:
+            asyncio.run_coroutine_threadsafe(queue.put(event), loop)
+        except Exception:
+            pass
+
     def _emit(pct: int, msg: str):
-        asyncio.run_coroutine_threadsafe(queue.put({"pct": pct, "msg": msg}), loop)
+        _put({"pct": pct, "msg": msg})
 
-    async def event_stream():
-        _emit(5, "Reading documents..." if documents_override is None
-                 else "Loading stored corpus...")
-
-        def _run():
+    # ── Worker DISACCOPPIATO dalla richiesta SSE ──────────────────────────────
+    # La pipeline (~10 min su pack grossi) e il salvataggio su DB girano su un
+    # thread che NON è legato alla connessione del client. Se l'SSE cade (es.
+    # "network error" dietro i proxy su run lunghi), Starlette cancella il
+    # generatore con CancelledError (BaseException, non catturata da
+    # `except Exception`): col vecchio codice il salvataggio — che stava DOPO il
+    # loop, DENTRO il generatore — non veniva mai eseguito e 10 minuti di lavoro
+    # andavano persi. Ora il worker completa e PERSISTE comunque; il client può
+    # ritrovare l'analisi nella lista anche se ha perso lo stream live.
+    def _worker():
+        try:
+            _emit(5, "Reading documents..." if documents_override is None
+                     else "Loading stored corpus...")
             from compliance.pipeline import run_compliance_pipeline
             outcome = run_compliance_pipeline(
                 zip_bytes=zip_bytes,
@@ -388,51 +406,47 @@ def _pipeline_sse_response(
             )
             if not outcome.get("success"):
                 raise RuntimeError(outcome.get("error", "Pipeline failed"))
-            return outcome
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = loop.run_in_executor(pool, _run)
-
-            while not future.done():
-                try:
-                    event = await asyncio.wait_for(queue.get(), timeout=0.3)
-                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-                except asyncio.TimeoutError:
-                    yield ": keepalive\n\n"
-
-            while not queue.empty():
-                event = queue.get_nowait()
-                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+            result = outcome["result"]
+            result_dict = result.model_dump()
+            context_dict = context.model_dump()
 
             try:
-                outcome = future.result()
-                result = outcome["result"]
-                result_dict = result.model_dump()
-                context_dict = context.model_dump()
+                save_compliance_analysis(
+                    analysis_id=result.analysis_id,
+                    user_id=username,
+                    result_json_str=json.dumps(result_dict),
+                    context_json_str=json.dumps(context_dict),
+                    evidence_yaml=outcome.get("evidence_yaml") or "",
+                )
+            except Exception as db_err:
+                logger.warning(f"[Compliance] DB save failed (non-blocking): {db_err}")
 
+            if on_success is not None:
                 try:
-                    save_compliance_analysis(
-                        analysis_id=result.analysis_id,
-                        user_id=username,
-                        result_json_str=json.dumps(result_dict),
-                        context_json_str=json.dumps(context_dict),
-                        evidence_yaml=outcome.get("evidence_yaml") or "",
-                    )
-                except Exception as db_err:
-                    logger.warning(f"[Compliance] DB save failed (non-blocking): {db_err}")
+                    on_success(result, outcome)
+                except Exception as cb_err:
+                    logger.warning(f"[Compliance] on_success callback failed (non-blocking): {cb_err}")
 
-                if on_success is not None:
-                    try:
-                        on_success(result, outcome)
-                    except Exception as cb_err:
-                        logger.warning(f"[Compliance] on_success callback failed (non-blocking): {cb_err}")
+            _put({"done": True, "analysis_id": result.analysis_id, "result": result_dict})
+        except Exception as e:
+            logger.error(f"[Compliance] {e}\n{traceback.format_exc()}")
+            _put({"error": str(e)})
 
-                done_event = {"done": True, "analysis_id": result.analysis_id, "result": result_dict}
-                yield f"data: {json.dumps(done_event, ensure_ascii=False)}\n\n"
+    threading.Thread(target=_worker, name="compliance-pipeline", daemon=True).start()
 
-            except Exception as e:
-                logger.error(f"[Compliance] {e}\n{traceback.format_exc()}")
-                yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+    async def event_stream():
+        # Osserva la coda e inoltra i progress; keepalive ogni 0.3s per non far
+        # cadere lo stream. Si chiude sul primo evento terminale (done/error).
+        while True:
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=0.3)
+            except asyncio.TimeoutError:
+                yield ": keepalive\n\n"
+                continue
+            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+            if "done" in event or "error" in event:
+                break
 
     return StreamingResponse(
         event_stream(),
