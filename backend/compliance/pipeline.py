@@ -127,9 +127,11 @@ def _extract_documents(zip_bytes: bytes, emit: Callable) -> List[Dict[str, Any]]
                 if err:
                     errors[idx] = err
                 completed += 1
-                if completed % 5 == 0 or completed == total:
-                    emit(6.0 + 2.0 * completed / total,
-                         f"Reading documents… {completed}/{total}")
+                # Banda larga (6→18%) + emit ad OGNI documento: l'estrazione/OCR
+                # è la parte lunga sui pack scansionati, dev'essere visibile che
+                # avanza (prima stava schiacciata in 6→8% e sembrava bloccata).
+                emit(6.0 + 12.0 * completed / total,
+                     f"Reading documents… {completed}/{total}")
 
     # 3) RICOSTRUZIONE in ordine originale — stessa semantica skip/log del
     #    sequenziale: contenuto vuoto → saltato; eccezione → warning.
@@ -149,8 +151,8 @@ def _extract_documents(zip_bytes: bytes, emit: Callable) -> List[Dict[str, Any]]
 
     for w in warnings[:20]:
         _log.warning("[Phase 1] %s", w)
-    emit(8.0, f"Extraction complete: {len(docs)} documents with text "
-              f"({skipped} without text, {dup_count} duplicates skipped).")
+    emit(18.0, f"Extraction complete: {len(docs)} documents with text "
+               f"({skipped} without text, {dup_count} duplicates skipped).")
     return docs
 
 # ──────────────────────────────────────────────────────────────────────────────

@@ -18,12 +18,20 @@ from __future__ import annotations
 
 import io
 import logging
+import threading
 import unicodedata
 import zipfile
 from pathlib import Path
 from typing import Callable, Dict, Iterator, List, Optional, Tuple
 
 _log = logging.getLogger("compliance.extraction")
+
+# pypdfium2/PDFium NON è thread-safe (lo dichiara la doc upstream). Con la Fase 1
+# parallela più worker chiamavano pdfium concorrentemente → Segmentation fault
+# (munmap_chunk: invalid pointer). Questo lock serializza TUTTI gli accessi a
+# pypdfium; il parsing nativo è veloce, mentre l'OCR di rete resta FUORI dal lock
+# (concorrente) → lo speed-up è preservato.
+_PDFIUM_LOCK = threading.Lock()
 
 
 def _repair_zip_name(raw_name: str) -> str:
@@ -255,23 +263,26 @@ def _extract_pdf_text(raw: bytes, filename: str) -> str:
     page_count = 0
 
     try:
-        import pypdfium2 as pdfium  # type: ignore
-        pdf = pdfium.PdfDocument(io.BytesIO(raw))
-        try:
-            page_count = len(pdf)
-            for i in range(page_count):
-                page = pdf[i]
-                try:
-                    textpage = page.get_textpage()
+        # Serializza il parsing nativo pypdfium (non thread-safe). L'OCR di rete
+        # più sotto resta fuori dal lock → concorrente fra i worker.
+        with _PDFIUM_LOCK:
+            import pypdfium2 as pdfium  # type: ignore
+            pdf = pdfium.PdfDocument(io.BytesIO(raw))
+            try:
+                page_count = len(pdf)
+                for i in range(page_count):
+                    page = pdf[i]
                     try:
-                        text = textpage.get_text_bounded() or ""
+                        textpage = page.get_textpage()
+                        try:
+                            text = textpage.get_text_bounded() or ""
+                        finally:
+                            textpage.close()
                     finally:
-                        textpage.close()
-                finally:
-                    page.close()
-                page_texts[i + 1] = text
-        finally:
-            pdf.close()
+                        page.close()
+                    page_texts[i + 1] = text
+            finally:
+                pdf.close()
     except Exception as e:
         _log.debug("[Phase 1] pypdfium2 failed on %s: %s", filename, e)
         page_texts = {}
