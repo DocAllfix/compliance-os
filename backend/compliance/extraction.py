@@ -417,11 +417,72 @@ def _extract_docx_bytes(raw: bytes) -> str:
         return ""
 
 
+def _doc_text_quality(text: str) -> float:
+    """Punteggio 0..1 della 'leggibilità' di un testo estratto da .doc.
+
+    Conta la frazione di caratteri che appartengono a parole plausibili
+    (lettere/cifre/punteggiatura/spazi comuni) e premia la presenza di run
+    alfabetici di lunghezza ≥3 (parole vere). Serve a scegliere la decodifica
+    giusta: l'UTF-16LE letto come latin-1 produce 't\\x00e\\x00s\\x00t' →
+    dopo lo strip diventa 't e s t', cioè pochissime parole vere → punteggio
+    basso. La decodifica corretta produce parole intere → punteggio alto."""
+    import re as _re
+    if not text:
+        return 0.0
+    words = _re.findall(r"[A-Za-zÀ-ÿ]{3,}", text)
+    word_chars = sum(len(w) for w in words)
+    return word_chars / max(len(text), 1)
+
+
+def _doc_via_antiword(raw: bytes) -> str:
+    """Estrae .doc via `antiword` (come AUDITORSEMI su Linux): è il metodo di
+    QUALITÀ. antiword è path-based → si scrivono i bytes in un file temporaneo.
+    Ritorna "" se antiword non è installato o fallisce (→ il chiamante usa il
+    fallback pure-Python). Su Railway va aggiunto al build (Nixpacks aptPkgs)."""
+    import os
+    import shutil
+    import subprocess
+    import tempfile
+    if not shutil.which("antiword"):
+        return ""
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".doc", delete=False) as tf:
+            tf.write(raw)
+            tmp_path = tf.name
+        result = subprocess.run(
+            ["antiword", tmp_path],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+        return ""
+    except Exception:
+        return ""
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+
+
 def _extract_doc_legacy(raw: bytes) -> str:
-    """.doc legacy (OLE binario): best-effort via olefile sullo stream
-    `WordDocument`. Recupera il corpo testuale con un po' di rumore (senza Word
-    non si fa meglio in pure-Python). Meglio testo imperfetto che documento
-    invisibile."""
+    """.doc legacy (OLE binario). Strategia a due livelli:
+
+    1. **antiword** (se installato): metodo di qualità, identico ad AUDITORSEMI
+       su Linux → testo pulito, niente poltiglia, niente retry a valle.
+    2. **Fallback pure-Python** (olefile + multi-codec): i Word moderni salvano
+       il testo in UTF-16LE; leggerlo come latin-1 (come prima) produceva
+       't e s t' spaziato che il motore evidence non riusciva a cardare. Ora si
+       provano più decodifiche (utf-16-le, cp1252, latin-1) e si tiene quella con
+       più testo leggibile (`_doc_text_quality`). Funziona senza alcun binario."""
+    # 1) antiword (qualità) — se presente e il testo è leggibile, vince.
+    aw = _doc_via_antiword(raw)
+    if aw and _doc_text_quality(aw) >= 0.3:
+        return aw
+
+    # 2) fallback pure-Python (olefile + scelta della decodifica migliore).
     try:
         import io
         import re as _re
@@ -436,11 +497,25 @@ def _extract_doc_legacy(raw: bytes) -> str:
             data = ole.openstream("WordDocument").read()
         finally:
             ole.close()
-        text = data.decode("latin-1", errors="ignore")
-        # Rimuovi sequenze di controllo lasciando il testo leggibile.
-        text = _re.sub(r"[\x00-\x08\x0b-\x0c\x0e-\x1f]+", " ", text)
-        text = _re.sub(r"\s{3,}", "\n", text)
-        return text.strip()
+
+        def _clean(s: str) -> str:
+            # Rimuovi sequenze di controllo lasciando il testo leggibile.
+            s = _re.sub(r"[\x00-\x08\x0b-\x0c\x0e-\x1f]+", " ", s)
+            s = _re.sub(r"\s{3,}", "\n", s)
+            return s.strip()
+
+        # Candidate decodifiche: la UTF-16LE recupera i .doc moderni (PSGSSL),
+        # cp1252/latin-1 i vecchi a 8 bit. Si sceglie per qualità misurata.
+        candidates = []
+        for codec in ("utf-16-le", "cp1252", "latin-1"):
+            try:
+                candidates.append(_clean(data.decode(codec, errors="ignore")))
+            except Exception:
+                continue
+        if not candidates:
+            return ""
+        best = max(candidates, key=_doc_text_quality)
+        return best
     except Exception:
         return ""
 
