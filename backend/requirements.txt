@@ -21,7 +21,15 @@ pdfminer.six>=20231228   # fallback whole-document PDF
 python-docx>=1.1.0       # DOCX (paragrafi + tabelle)
 openpyxl>=3.1.2          # XLSX/XLSM (obiettivi/KPI in spreadsheet — P7)
 xlrd>=2.0.1              # XLS legacy
-azure-ai-documentintelligence>=1.0.0  # OCR prebuilt-read (full-doc e per-pagina)
+# ── Coverage estesa (Fase A): doc/rtf/pptx/odt-ods/html-xml/eml-msg/p7m ──────
+olefile>=0.47           # .doc legacy (stream WordDocument)
+striprtf>=0.0.26        # .rtf
+python-pptx>=0.6.21     # .pptx (slide + tabelle)
+odfpy>=1.4.1            # .odt / .ods (OpenDocument)
+beautifulsoup4>=4.12.0  # .html/.htm (+ body HTML delle email)
+lxml>=5.0.0             # parser HTML/.xml (wheel manylinux)
+extract-msg>=0.48.0     # .msg Outlook
+azure-ai-documentintelligence>=1.0.0  # OCR prebuilt-read (full-doc, per-pagina, immagini)
 
 # ── Compliance engine ─────────────────────────────────────────────────────────
 chromadb>=1.5.0          # chunk index semantico per-analisi

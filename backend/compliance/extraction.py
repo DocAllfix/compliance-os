@@ -172,15 +172,25 @@ def _is_low_quality_text(text: str) -> bool:
     return (readable / len(nonspace)) < _PDF_MIN_QUALITY_RATIO
 
 
+# Estensioni testuali semplici (decode diretto) e immagini (→ OCR Azure DI).
+_TEXT_EXTS = (".txt", ".md", ".csv", ".log", ".tsv")
+_IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".gif", ".heic", ".heif")
+
+
 def extract_document(filename: str, raw: bytes) -> str:
     """Best-effort text extraction with page/sheet markers (Sprint R1).
 
     PDF output carries `[PAGE n]` markers so downstream page citations are
     real, not LLM-estimated. Spreadsheets carry `[SHEET "name"]` markers.
+
+    Coverage estesa (Fase A): oltre a pdf/docx/xlsx/txt, gestisce doc legacy,
+    rtf, pptx, odt/ods, html/xml, eml/msg, p7m e immagini (via OCR). Ogni
+    handler è ADDITIVO e non solleva mai: i formati storici restano INVARIATI.
     """
     ext = Path(filename).suffix.lower()
 
-    if ext in (".txt", ".md", ".csv"):
+    # ── Formati storici (INVARIATI) ──────────────────────────────────────────
+    if ext in _TEXT_EXTS:
         try:
             return raw.decode("utf-8", errors="replace")
         except Exception:
@@ -192,19 +202,34 @@ def extract_document(filename: str, raw: bytes) -> str:
     if ext in (".xlsx", ".xlsm", ".xls"):
         return _extract_spreadsheet_text(raw, ext)
 
-    if ext in (".docx", ".doc"):
+    if ext == ".docx":
+        return _extract_docx_bytes(raw)
+
+    # ── Coverage estesa (Fase A) — handler bytes-based, mai solleva ──────────
+    if ext == ".doc":
+        return _extract_doc_legacy(raw)
+    if ext == ".rtf":
+        return _extract_rtf(raw)
+    if ext == ".pptx":
+        return _extract_pptx(raw)
+    if ext == ".odt":
+        return _extract_odt(raw)
+    if ext == ".ods":
+        return _extract_ods(raw)
+    if ext in (".html", ".htm"):
+        return _extract_html(raw)
+    if ext == ".xml":
+        return _extract_xml(raw)
+    if ext == ".eml":
+        return _extract_eml(raw)
+    if ext == ".msg":
+        return _extract_msg(raw)
+    if ext == ".p7m":
+        return _extract_p7m(raw, filename)
+    if ext in _IMAGE_EXTS:
         try:
-            import io, docx  # type: ignore
-            doc = docx.Document(io.BytesIO(raw))
-            parts = [p.text for p in doc.paragraphs]
-            # Sprint R1: DOCX tables were silently skipped before — registers,
-            # objectives and MR minutes often live in tables.
-            for table in doc.tables:
-                for row in table.rows:
-                    cells = [c.text.strip() for c in row.cells if c.text.strip()]
-                    if cells:
-                        parts.append(" | ".join(cells))
-            return "\n".join(parts)
+            from compliance.azure_ocr import ocr_image_bytes
+            return ocr_image_bytes(raw, filename=filename)
         except Exception:
             return ""
 
@@ -352,4 +377,226 @@ def _extract_spreadsheet_text(raw: bytes, ext: str) -> str:
         return "\n\n".join(parts)
     except Exception as e:
         _log.warning("[Phase 1] xls extraction failed: %s", e)
+        return ""
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Coverage estesa (Fase A) — handler bytes-based. Mirroring AUDITORSEMI
+# webapp/v2/text_handlers.py (sola lettura), adattati da path a bytes. Ogni
+# handler NON solleva mai: su qualsiasi errore (libreria mancante, file
+# corrotto) ritorna "" e il documento risulta semplicemente "senza testo".
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _extract_docx_bytes(raw: bytes) -> str:
+    """DOCX (paragrafi + tabelle). Output INVARIATO rispetto al branch storico."""
+    try:
+        import io
+        import docx  # type: ignore
+        doc = docx.Document(io.BytesIO(raw))
+        parts = [p.text for p in doc.paragraphs]
+        # Sprint R1: DOCX tables were silently skipped before — registers,
+        # objectives and MR minutes often live in tables.
+        for table in doc.tables:
+            for row in table.rows:
+                cells = [c.text.strip() for c in row.cells if c.text.strip()]
+                if cells:
+                    parts.append(" | ".join(cells))
+        return "\n".join(parts)
+    except Exception:
+        return ""
+
+
+def _extract_doc_legacy(raw: bytes) -> str:
+    """.doc legacy (OLE binario): best-effort via olefile sullo stream
+    `WordDocument`. Recupera il corpo testuale con un po' di rumore (senza Word
+    non si fa meglio in pure-Python). Meglio testo imperfetto che documento
+    invisibile."""
+    try:
+        import io
+        import re as _re
+        import olefile  # type: ignore
+        bio = io.BytesIO(raw)
+        if not olefile.isOleFile(bio):
+            return ""
+        ole = olefile.OleFileIO(bio)
+        try:
+            if not ole.exists("WordDocument"):
+                return ""
+            data = ole.openstream("WordDocument").read()
+        finally:
+            ole.close()
+        text = data.decode("latin-1", errors="ignore")
+        # Rimuovi sequenze di controllo lasciando il testo leggibile.
+        text = _re.sub(r"[\x00-\x08\x0b-\x0c\x0e-\x1f]+", " ", text)
+        text = _re.sub(r"\s{3,}", "\n", text)
+        return text.strip()
+    except Exception:
+        return ""
+
+
+def _extract_rtf(raw: bytes) -> str:
+    try:
+        from striprtf.striprtf import rtf_to_text  # type: ignore
+        s = raw.decode("utf-8", errors="ignore")
+        return (rtf_to_text(s) or "").strip()
+    except Exception:
+        return ""
+
+
+def _extract_pptx(raw: bytes) -> str:
+    try:
+        import io
+        from pptx import Presentation  # type: ignore
+        prs = Presentation(io.BytesIO(raw))
+        parts: List[str] = []
+        for i, slide in enumerate(prs.slides, 1):
+            parts.append(f"[SLIDE {i}]")
+            for shape in slide.shapes:
+                if getattr(shape, "has_text_frame", False):
+                    for para in shape.text_frame.paragraphs:
+                        line = "".join(run.text for run in para.runs)
+                        if line.strip():
+                            parts.append(line)
+                if getattr(shape, "has_table", False):
+                    for row in shape.table.rows:
+                        cells = [c.text.strip() for c in row.cells if c.text.strip()]
+                        if cells:
+                            parts.append(" | ".join(cells))
+        return "\n".join(parts).strip()
+    except Exception:
+        return ""
+
+
+def _extract_odt(raw: bytes) -> str:
+    try:
+        import io
+        from odf import teletype  # type: ignore
+        from odf.opendocument import load  # type: ignore
+        doc = load(io.BytesIO(raw))
+        return (teletype.extractText(doc.text) or "").strip()
+    except Exception:
+        return ""
+
+
+def _extract_ods(raw: bytes) -> str:
+    try:
+        import io
+        from odf import opendocument, table, teletype  # type: ignore
+        doc = opendocument.load(io.BytesIO(raw))
+        parts: List[str] = []
+        for sheet in doc.spreadsheet.getElementsByType(table.Table):
+            parts.append(f'[SHEET "{sheet.getAttribute("name")}"]')
+            for row in sheet.getElementsByType(table.TableRow):
+                cells = []
+                for cell in row.getElementsByType(table.TableCell):
+                    t = teletype.extractText(cell).strip()
+                    if t:
+                        cells.append(t)
+                if cells:
+                    parts.append(" | ".join(cells))
+        return "\n".join(parts).strip()
+    except Exception:
+        return ""
+
+
+def _extract_html(raw: bytes) -> str:
+    try:
+        from bs4 import BeautifulSoup  # type: ignore
+        try:
+            html = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            html = raw.decode("latin-1", errors="ignore")
+        try:
+            soup = BeautifulSoup(html, "lxml")
+        except Exception:
+            soup = BeautifulSoup(html, "html.parser")  # fallback stdlib
+        for tag in soup(["script", "style"]):
+            tag.decompose()
+        return soup.get_text(separator="\n", strip=True)
+    except Exception:
+        return ""
+
+
+def _extract_xml(raw: bytes) -> str:
+    try:
+        import io
+        from lxml import etree  # type: ignore
+        tree = etree.parse(io.BytesIO(raw))
+        parts: List[str] = []
+        for elem in tree.getroot().iter():
+            if elem.text and elem.text.strip():
+                parts.append(elem.text.strip())
+            if elem.tail and elem.tail.strip():
+                parts.append(elem.tail.strip())
+        return "\n".join(parts).strip()
+    except Exception:
+        return ""
+
+
+def _extract_eml(raw: bytes) -> str:
+    try:
+        import email
+        from email import policy
+        msg = email.message_from_bytes(raw, policy=policy.default)
+        parts: List[str] = []
+        for h in ("From", "To", "Subject", "Date"):
+            v = msg.get(h)
+            if v:
+                parts.append(f"{h}: {v}")
+        body = msg.get_body(preferencelist=("plain", "html"))
+        if body is not None:
+            content = body.get_content()
+            if isinstance(content, str):
+                if body.get_content_type() == "text/html":
+                    content = _extract_html(content.encode("utf-8", errors="ignore"))
+                parts.append(content)
+        return "\n".join(parts).strip()
+    except Exception:
+        return ""
+
+
+def _extract_msg(raw: bytes) -> str:
+    """.msg Outlook: extract_msg lavora su path → scrivo un file temporaneo."""
+    try:
+        import os as _os
+        import tempfile
+        import extract_msg  # type: ignore
+        tmp = tempfile.NamedTemporaryFile(suffix=".msg", delete=False)
+        try:
+            tmp.write(raw)
+            tmp.close()
+            m = extract_msg.Message(tmp.name)
+            parts: List[str] = []
+            for label, val in (("From", m.sender), ("To", m.to),
+                               ("Subject", m.subject), ("Date", m.date)):
+                if val:
+                    parts.append(f"{label}: {val}")
+            if m.body:
+                parts.append(m.body)
+            m.close()
+            return "\n".join(parts).strip()
+        finally:
+            try:
+                _os.unlink(tmp.name)
+            except OSError:
+                pass
+    except Exception:
+        return ""
+
+
+def _extract_p7m(raw: bytes, filename: str) -> str:
+    """.p7m (PKCS#7): wrapper che incapsula un documento firmato (tipicamente
+    PDF/DOCX). Best-effort: trova il file embedded e lo estrae ricorsivamente
+    (bytes-native, niente file temporanei)."""
+    try:
+        pdf_start = raw.find(b"%PDF-")
+        if pdf_start >= 0:
+            pdf_end = raw.rfind(b"%%EOF")
+            if pdf_end > pdf_start:
+                return _extract_pdf_text(raw[pdf_start:pdf_end + 5], filename)
+        zip_start = raw.find(b"PK\x03\x04")
+        if zip_start >= 0:
+            return _extract_docx_bytes(raw[zip_start:])
+        return ""
+    except Exception:
         return ""

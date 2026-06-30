@@ -47,6 +47,14 @@ _log = logging.getLogger("compliance.pipeline")
 # Phase 1 helper — text extraction from ZIP
 # ──────────────────────────────────────────────────────────────────────────────
 
+# Phase 1 parallelism — estrazione/OCR è I/O-bound (parse nativo + attesa rete
+# Azure DI): il collo di bottiglia su pack scansionati. Il default 8 worker
+# abbatte la wall-time SENZA toccare l'output. L'ordine dei documenti è
+# PRESERVATO (ricostruzione index-keyed) → byte-identico al sequenziale, vedi
+# test_extract_parallel_equivalence. Override via env per il deploy.
+EXTRACT_MAX_WORKERS = int(os.environ.get("EXTRACT_MAX_WORKERS", "8"))
+
+
 def _extract_documents(zip_bytes: bytes, emit: Callable) -> List[Dict[str, Any]]:
     """
     Estrae il testo da TUTTI i file di un archivio ZIP, **ricorrendo dentro gli
@@ -57,12 +65,16 @@ def _extract_documents(zip_bytes: bytes, emit: Callable) -> List[Dict[str, Any]]
     nativo (pypdfium/openpyxl/docx) e ricade su OCR Azure DI solo per i PDF
     senza testo nativo (scansionati). I file che non producono testo vengono
     saltati ma il problema resta visibile nei log.
+
+    Estrazione PARALLELA (ThreadPoolExecutor): l'OCR è I/O-bound. L'ordine è
+    preservato ricostruendo `docs` per indice originale → identico al
+    sequenziale (nessuna confusione doc↔card: il binding a valle è comunque per
+    filename/evidence_id, vedi embedder/gap_analyzer).
     """
     import hashlib
     from compliance.extraction import iter_zip_files
 
     emit(5.0, "Extracting documents from archive (nested archives included)…")
-    docs: List[Dict[str, Any]] = []
     warnings: List[str] = []
 
     # 1) raccogli tutti i file reali (ricorsione zip annidati)
@@ -88,23 +100,52 @@ def _extract_documents(zip_bytes: bytes, emit: Callable) -> List[Dict[str, Any]]
     emit(6.0, f"Found {total} unique files (nested ZIPs unpacked; "
               f"{dup_count} byte-identical duplicates skipped).")
 
-    # 2) estrai il testo (native-first, OCR fallback) con progress per file
-    skipped = 0
-    for i, (name, raw) in enumerate(files):
+    # 2) estrai il testo IN PARALLELO (native-first, OCR fallback). Ogni worker
+    #    calcola il testo dai PROPRI bytes; i risultati sono indicizzati per
+    #    posizione e `docs` è ricostruito in ordine originale (sotto). `emit()`
+    #    resta sul thread principale (loop as_completed) per non avere race SSE.
+    results: Dict[int, str] = {}
+    errors: Dict[int, str] = {}
+
+    def _extract_one(idx, name, raw):
         try:
-            content = _read_file_content(name, raw)
-            if content and content.strip():
-                docs.append({"filename": name, "content": content})
-            else:
-                skipped += 1
-                _log.info("[Phase 1] no text extracted from %s (scanned without OCR?)", name)
-        except Exception as e:
+            return idx, (_read_file_content(name, raw) or ""), None
+        except Exception as e:  # mai propagare: si logga in fase di ricostruzione
+            return idx, "", str(e)
+
+    if total:
+        workers = max(1, min(EXTRACT_MAX_WORKERS, total))
+        completed = 0
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [
+                pool.submit(_extract_one, i, name, raw)
+                for i, (name, raw) in enumerate(files)
+            ]
+            for fut in as_completed(futures):
+                idx, content, err = fut.result()
+                results[idx] = content
+                if err:
+                    errors[idx] = err
+                completed += 1
+                if completed % 5 == 0 or completed == total:
+                    emit(6.0 + 2.0 * completed / total,
+                         f"Reading documents… {completed}/{total}")
+
+    # 3) RICOSTRUZIONE in ordine originale — stessa semantica skip/log del
+    #    sequenziale: contenuto vuoto → saltato; eccezione → warning.
+    docs: List[Dict[str, Any]] = []
+    skipped = 0
+    for idx, (name, raw) in enumerate(files):
+        content = results.get(idx, "")
+        if content and content.strip():
+            docs.append({"filename": name, "content": content})
+        else:
             skipped += 1
-            warnings.append(f"{name}: {e}")
-            _log.warning("[Phase 1] extraction failed for %s: %s", name, e)
-        if total and (i % 5 == 0 or i == total - 1):
-            emit(6.0 + 2.0 * (i + 1) / total,
-                 f"Reading documents… {i + 1}/{total} ({len(docs)} with text)")
+            if idx in errors:
+                warnings.append(f"{name}: {errors[idx]}")
+                _log.warning("[Phase 1] extraction failed for %s: %s", name, errors[idx])
+            else:
+                _log.info("[Phase 1] no text extracted from %s (scanned without OCR?)", name)
 
     for w in warnings[:20]:
         _log.warning("[Phase 1] %s", w)
