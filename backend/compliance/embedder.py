@@ -79,10 +79,19 @@ if ONNXMiniLM_L6_V2 is not None:
             docs = list(input)
             if self._workers <= 1 or len(docs) < _EMBED_MIN_PARALLEL:
                 return super().__call__(docs)
-            # Costruisci la sessione condivisa UNA volta prima del fan-out: la
-            # cached_property `model` non è garantita race-safe alla prima
-            # creazione concorrente; la sessione è invece thread-safe sui Run.
+            # PRECONDIZIONE (mirror del base __call__): su un container freddo la
+            # cache onnx è VUOTA. La cached_property `model` costruisce solo la
+            # InferenceSession dal file su disco e DÀ PER SCONTATO che esista —
+            # NON scarica. Il download avviene unicamente in
+            # `_download_model_if_not_exists()`, che il base chiama all'inizio di
+            # __call__. Quindi: prima scarica, POI scalda `model` e `tokenizer`
+            # (entrambe usate da `_forward`) UNA volta su QUESTO thread, prima di
+            # qualsiasi fan-out → i worker leggono solo oggetti già costruiti
+            # (onnxruntime.Run e il tokenizer Rust sono thread-safe in lettura),
+            # mai una init pigra in gara. Senza il download qui → NO_SUCHFILE.
+            self._download_model_if_not_exists()
             _ = self.model
+            _ = self.tokenizer
             n, w = len(docs), self._workers
             size = (n + w - 1) // w
             # Fette CONTIGUE → ricomposizione in ordine = stesso mapping id↔vettore.
