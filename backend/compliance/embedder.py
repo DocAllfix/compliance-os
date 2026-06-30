@@ -25,16 +25,86 @@ Dependencies: chromadb>=1.5.0 (installed in requirements.txt)
 from __future__ import annotations
 
 import hashlib
+import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
 import chromadb
+
+try:  # ChromaDB's default embedding model, imported for the threaded subclass.
+    from chromadb.utils.embedding_functions.onnx_mini_lm_l6_v2 import (
+        ONNXMiniLM_L6_V2,
+    )
+except Exception:  # pragma: no cover — keep the import optional
+    ONNXMiniLM_L6_V2 = None  # type: ignore[assignment,misc]
 
 
 # ── Chunking parameters (Sprint R2) ──────────────────────────────────────────
 
 CHUNK_TARGET_CHARS = 1_500
 CHUNK_OVERLAP_CHARS = 200
+
+
+# ── Embedding parallelism (speed only — vettori invariati) ───────────────────
+# L'embedding dell'indice ChromaDB (default all-MiniLM-L6-v2 su CPU) è il
+# secondo collo di bottiglia dopo la deep verification: sui pack grossi (es.
+# DVR 148 pagine → ~1.5k chunk) gira a ~10 chunk/s = ~2-3 min di CPU pura.
+# MISURATO: forzare `intra_op_num_threads` PEGGIORA (i core sono già usati dal
+# singolo Run); batch più grandi non aiutano. L'unica leva che accelera è
+# spezzare il loop dei batch su un thread-pool — onnxruntime.Run e il tokenizer
+# Rust rilasciano il GIL, quindi più Run concorrenti riempiono i core lasciati
+# liberi da un Run sequenziale (~1.5x misurato). Il MODELLO e i pesi non
+# cambiano → i vettori prodotti sono BIT-IDENTICI al default (verificato),
+# quindi ranking di retrieval e precisione dell'analisi restano invariati.
+_EMBED_MAX_WORKERS = int(os.environ.get("EMBED_MAX_WORKERS", str(min(8, os.cpu_count() or 4))))
+# Sotto questa soglia (es. le query a singola clausola) l'overhead del pool non
+# vale: si usa il percorso sequenziale del default.
+_EMBED_MIN_PARALLEL = 64
+
+
+if ONNXMiniLM_L6_V2 is not None:
+
+    class _ThreadedONNXMiniLM(ONNXMiniLM_L6_V2):  # type: ignore[misc,valid-type]
+        """EF di default di ChromaDB con il loop dei batch parallelizzato.
+
+        Stesso modello/pesi → output bit-identico al default; cambia SOLO la
+        velocità. Per input piccoli (query) ricade sul percorso base."""
+
+        def __init__(self, workers: int, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            self._workers = max(1, int(workers))
+
+        def __call__(self, input):  # type: ignore[override]
+            docs = list(input)
+            if self._workers <= 1 or len(docs) < _EMBED_MIN_PARALLEL:
+                return super().__call__(docs)
+            # Costruisci la sessione condivisa UNA volta prima del fan-out: la
+            # cached_property `model` non è garantita race-safe alla prima
+            # creazione concorrente; la sessione è invece thread-safe sui Run.
+            _ = self.model
+            n, w = len(docs), self._workers
+            size = (n + w - 1) // w
+            # Fette CONTIGUE → ricomposizione in ordine = stesso mapping id↔vettore.
+            slices = [docs[i:i + size] for i in range(0, n, size)]
+            base_call = ONNXMiniLM_L6_V2.__call__
+            with ThreadPoolExecutor(max_workers=w) as pool:
+                parts = list(pool.map(lambda s: base_call(self, s), slices))
+            out: List[Any] = []
+            for p in parts:
+                out.extend(p)
+            return out
+
+
+def _make_embedding_function():
+    """EF di default parallelizzata; None (→ default ChromaDB) se non
+    disponibile, così una ottimizzazione di velocità non rompe mai la pipeline."""
+    if ONNXMiniLM_L6_V2 is None or _EMBED_MAX_WORKERS <= 1:
+        return None
+    try:
+        return _ThreadedONNXMiniLM(workers=_EMBED_MAX_WORKERS)
+    except Exception:
+        return None
 
 _MARKER_RE = re.compile(r'\[(?:PAGE (\d+)|SHEET "([^"]+)")\]')
 
@@ -157,10 +227,16 @@ class EvidenceEmbedder:
             self._client.delete_collection(name=self.collection_name)
         except Exception:
             pass  # No prior collection — first run for this analysis_id.
-        self._collection = self._client.create_collection(
-            name=self.collection_name,
-            metadata={"hnsw:space": "cosine"},
-        )
+        create_kwargs: Dict[str, Any] = {
+            "name": self.collection_name,
+            "metadata": {"hnsw:space": "cosine"},
+        }
+        # EF di default PARALLELIZZATA (stessi vettori, più veloce). Solo se
+        # disponibile: altrimenti ChromaDB usa la sua default identica.
+        ef = _make_embedding_function()
+        if ef is not None:
+            create_kwargs["embedding_function"] = ef
+        self._collection = self._client.create_collection(**create_kwargs)
 
     def index_corpus(
         self,
