@@ -664,12 +664,16 @@ def run_compliance_pipeline(
             emit(8.0, f"Reusing stored corpus: {len(docs)} documents (extraction skipped).")
         else:
             docs = _extract_documents(zip_bytes or b"", emit)
+            _log.info("[Timing] phase 1 extraction: %.1fs (%d docs)",
+                      time.monotonic() - start, len(docs))
         if not docs:
             emit(100.0, "No readable documents found in archive.")
             return {"success": False, "error": "no_documents", "analysis_id": None, "result": None}
 
         # ── Phase 2: Evidence extraction (LLM) ───────────────────────────────
+        _t0 = time.monotonic()
         evidence_yaml = _extract_evidence(docs, company_context, emit)
+        _log.info("[Timing] phase 2 evidence: %.1fs", time.monotonic() - _t0)
 
         # ── Phase 2.5: Expiry check (deterministic, Python-only) ─────────────
         from compliance.expiry_check import run_expiry_check
@@ -682,12 +686,14 @@ def run_compliance_pipeline(
         )
 
         # ── Phase 3: Gap analysis (ChromaDB + LLM per clause) ────────────────
+        _t0 = time.monotonic()
         result: ComplianceAnalysisResult = analyze_compliance(
             evidence_yaml=evidence_yaml,
             company_context=company_context,
             emitter=lambda pct, msg: emit(35.0 + pct * 0.55, msg),
             documents=docs,  # Sprint R2: full texts for chunk index + deep pass
         )
+        _log.info("[Timing] phase 3 gap analysis (total): %.1fs", time.monotonic() - _t0)
 
         # Attach Phase 2.5 output to the final result
         try:
@@ -700,6 +706,7 @@ def run_compliance_pipeline(
 
         # ── Phase 4: Executive summary (LLM) ─────────────────────────────────
         emit(92.0, "Phase 4: drafting executive summary…")
+        _t0 = time.monotonic()
         try:
             from compliance.schemas import ExecutiveSummary
             es_dict = generate_executive_summary(result, evidence_yaml=evidence_yaml)
@@ -709,6 +716,7 @@ def run_compliance_pipeline(
             logging.getLogger("compliance.pipeline").warning(
                 f"ExecutiveSummary generation failed: {e!s} — continuing without it"
             )
+        _log.info("[Timing] phase 4 executive summary: %.1fs", time.monotonic() - _t0)
 
         # ── Fase 6: persisti il corpus estratto (abilita re-analyse) ─────────
         try:

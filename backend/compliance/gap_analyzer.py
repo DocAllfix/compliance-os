@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
@@ -171,7 +172,9 @@ def analyze_compliance(
     # Sprint R2: index content chunks (page-aware, original language) plus the
     # card summaries (UK English bridge). Falls back to summary-only when the
     # caller has no document texts (e.g. tests, legacy callers).
+    _t0 = time.monotonic()
     indexed = embedder.index_corpus(cards, documents=documents)
+    _log.info("[Timing] indexing: %.1fs (%d chunks)", time.monotonic() - _t0, indexed)
     emit(15.0, f"Indexed {indexed} evidence chunks. Starting gap analysis…")
 
     # Sprint 3.2 — wrap the embedder in an EvidenceService so retrieval goes
@@ -211,6 +214,7 @@ def analyze_compliance(
     norms_to_analyse = [n for n in company_context.norms if n in effective_registry]
     documented_info_dict: Optional[Dict[str, Any]] = None
     absent_by_clause: Dict[str, List[Dict[str, Any]]] = {}
+    _t0 = time.monotonic()
     try:
         from compliance.documented_info_check import (
             run_documented_info_check, absent_items_by_clause,
@@ -231,6 +235,7 @@ def analyze_compliance(
         ))
     except Exception as e:
         _log.warning("Phase 2.6 documented-info check failed (non-blocking): %s", e)
+    _log.info("[Timing] phase 2.6 documented-info: %.1fs", time.monotonic() - _t0)
 
     context_block = build_context_prompt_block(company_context)
     # Phase 3 batches up to GAP_BATCH_SIZE clauses per LLM call — use the
@@ -254,6 +259,7 @@ def analyze_compliance(
     # flags. Feeds the §6.1 deep verification and the risk→control chains.
     risk_register_dict: Optional[Dict[str, Any]] = None
     risk_register_text: str = ""
+    _t0 = time.monotonic()
     if docs_by_name:
         try:
             from compliance.risk_extractor import (
@@ -276,10 +282,12 @@ def analyze_compliance(
                 ))
         except Exception as e:
             _log.warning("Phase 2.7 risk extraction failed (non-blocking): %s", e)
+    _log.info("[Timing] phase 2.7 risk extraction: %.1fs", time.monotonic() - _t0)
 
     emit(19.0, f"Running gap analysis for {len(norms_to_analyse)} norm(s) in parallel…")
 
     # Run norms in parallel using a thread pool (LLM calls are I/O-bound)
+    _t0 = time.monotonic()
     norm_reports: List[NormGapReport] = _analyse_norms_parallel(
         norms=norms_to_analyse,
         base_prompt=base_prompt,
@@ -293,9 +301,12 @@ def analyze_compliance(
         risk_register_text=risk_register_text,
         registry=effective_registry,
     )
+    _log.info("[Timing] phase 3 stage A+B (%d norms): %.1fs",
+              len(norms_to_analyse), time.monotonic() - _t0)
 
     # ── Phase 3.5 — cross-clause coherence (Sprint R5, PRD 1.4.2c / P6) ───────
     cross_clause_findings: List[Any] = []
+    _t0 = time.monotonic()
     try:
         from compliance.cross_clause import run_cross_clause_checks
         gaps_by_norm = {r.norm: r.clauses for r in norm_reports}
@@ -310,6 +321,7 @@ def analyze_compliance(
         )
     except Exception as e:
         _log.warning("Phase 3.5 cross-clause pass failed (non-blocking): %s", e)
+    _log.info("[Timing] phase 3.5 cross-clause: %.1fs", time.monotonic() - _t0)
 
     evidence_service.close()  # no-op when non-owning (see EvidenceService docs)
     embedder.close()
