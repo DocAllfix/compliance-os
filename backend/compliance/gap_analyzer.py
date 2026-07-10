@@ -257,32 +257,49 @@ def analyze_compliance(
     # Reads every risk document IN FULL and extracts the register as data:
     # risks, methodology, score, mitigation, owner — with per-entry presence
     # flags. Feeds the §6.1 deep verification and the risk→control chains.
-    risk_register_dict: Optional[Dict[str, Any]] = None
-    risk_register_text: str = ""
-    _t0 = time.monotonic()
+    #
+    # Overlap 2026-07: gira in PARALLELO allo Stage A. Il suo output non entra
+    # mai nei prompt Stage A: è letto solo da Stage B e cross-clause, che
+    # joinano il future prima di usarlo. Stessi input alle stesse chiamate —
+    # cambia solo il momento di partenza (vincolo: output identico al serial).
+    def _run_risk_extraction() -> tuple:
+        rdict: Optional[Dict[str, Any]] = None
+        rtext: str = ""
+        _t = time.monotonic()
+        if docs_by_name:
+            try:
+                from compliance.risk_extractor import (
+                    run_risk_extraction, format_register_for_prompt,
+                )
+                rdict = run_risk_extraction(
+                    cards=cards,
+                    docs_by_name=docs_by_name,
+                    context_block=context_block,
+                    llm_call=lambda messages, max_tokens: _call_llm(messages, max_tokens=max_tokens),
+                    emitter=None,
+                )
+                if rdict:
+                    rtext = format_register_for_prompt(rdict)
+                    # Log-only: un emit qui arriverebbe a Stage A in corso e
+                    # farebbe regredire la barra SSE (il frontend non clampa).
+                    _log.info(
+                        "Risk register: %s risks, %s unscored, %s without mitigation.",
+                        rdict.get("total_risks"), rdict.get("unscored_count"),
+                        rdict.get("unmitigated_count"),
+                    )
+            except Exception as e:
+                _log.warning("Phase 2.7 risk extraction failed (non-blocking): %s", e)
+        _log.info("[Timing] phase 2.7 risk extraction: %.1fs", time.monotonic() - _t)
+        return rdict, rtext
+
     if docs_by_name:
-        try:
-            from compliance.risk_extractor import (
-                run_risk_extraction, format_register_for_prompt,
-            )
-            emit(18.5, "Extracting structured risk register…")
-            risk_register_dict = run_risk_extraction(
-                cards=cards,
-                docs_by_name=docs_by_name,
-                context_block=context_block,
-                llm_call=lambda messages, max_tokens: _call_llm(messages, max_tokens=max_tokens),
-                emitter=None,
-            )
-            if risk_register_dict:
-                risk_register_text = format_register_for_prompt(risk_register_dict)
-                emit(19.0, (
-                    f"Risk register: {risk_register_dict['total_risks']} risks, "
-                    f"{risk_register_dict['unscored_count']} unscored, "
-                    f"{risk_register_dict['unmitigated_count']} without mitigation."
-                ))
-        except Exception as e:
-            _log.warning("Phase 2.7 risk extraction failed (non-blocking): %s", e)
-    _log.info("[Timing] phase 2.7 risk extraction: %.1fs", time.monotonic() - _t0)
+        emit(18.5, "Extracting structured risk register…")
+    _risk_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="risk-27")
+    _risk_future = _risk_pool.submit(_run_risk_extraction)
+
+    def _risk_text_provider() -> str:
+        # Join point per Stage B/cross-clause: blocca finché la 2.7 è completa.
+        return _risk_future.result()[1]
 
     emit(19.0, f"Running gap analysis for {len(norms_to_analyse)} norm(s) in parallel…")
 
@@ -298,11 +315,17 @@ def analyze_compliance(
         absent_by_clause=absent_by_clause,
         docs_by_name=docs_by_name,
         context_block=context_block,
-        risk_register_text=risk_register_text,
+        risk_register_provider=_risk_text_provider,
         registry=effective_registry,
     )
     _log.info("[Timing] phase 3 stage A+B (%d norms): %.1fs",
               len(norms_to_analyse), time.monotonic() - _t0)
+
+    # A questo punto la 2.7 è comunque completa (Stage B l'ha joinata; se non
+    # c'erano documenti il future è immediato). Materializza per cross-clause
+    # e per RiskRegisterExtract nel result.
+    risk_register_dict, risk_register_text = _risk_future.result()
+    _risk_pool.shutdown(wait=False)
 
     # ── Phase 3.5 — cross-clause coherence (Sprint R5, PRD 1.4.2c / P6) ───────
     cross_clause_findings: List[Any] = []
@@ -377,6 +400,7 @@ def _analyse_norms_parallel(
     context_block: str = "",
     risk_register_text: str = "",
     registry: Optional[Dict[str, Dict[str, Any]]] = None,
+    risk_register_provider: Optional[Callable[[], str]] = None,
 ) -> List[NormGapReport]:
     """
     Run gap analysis for all requested norms in parallel using a thread pool.
@@ -386,6 +410,10 @@ def _analyse_norms_parallel(
 
     Fase 7: `registry` è il registry EFFETTIVO (ISO + custom set); fallback
     al registry statico per i chiamanti legacy.
+
+    Overlap 2026-07: `risk_register_provider` (se presente) vince su
+    `risk_register_text` — è il join sul future della Phase 2.7, risolto da
+    ogni norma al confine Stage A → Stage B (Stage A non usa il registro).
     """
     registry = registry or _NORM_REGISTRY
     if not norms:
@@ -409,6 +437,7 @@ def _analyse_norms_parallel(
             docs_by_name=docs_by_name,
             context_block=context_block,
             risk_register_text=risk_register_text,
+            risk_register_provider=risk_register_provider,
         )
         return [_build_norm_report(norm, gaps, norm_cfg["clauses"])]
 
@@ -433,6 +462,7 @@ def _analyse_norms_parallel(
             docs_by_name=docs_by_name,
             context_block=context_block,
             risk_register_text=risk_register_text,
+            risk_register_provider=risk_register_provider,
         )
         results[norm] = _build_norm_report(norm, gaps, norm_cfg["clauses"])
 
@@ -732,6 +762,7 @@ def _analyse_norm(
     docs_by_name: Optional[Dict[str, str]] = None,
     context_block: str = "",
     risk_register_text: str = "",
+    risk_register_provider: Optional[Callable[[], str]] = None,
 ) -> List[ClauseGap]:
     clause_list = _sort_clauses_by_criticality(list(clauses.values()))
 
@@ -800,6 +831,11 @@ def _analyse_norm(
 
     # ── Stage B — deep verification on full documents (Sprint R4) ────────────
     if docs_by_name:
+        # Overlap 2026-07: qui finisce lo Stage A e inizia lo Stage B — è il
+        # punto dove il registro rischi serve davvero. Il provider joina il
+        # future della 2.7 (no-op se è già completa).
+        if risk_register_provider is not None:
+            risk_register_text = risk_register_provider()
         try:
             from compliance.deep_verifier import run_deep_verification
             # Hardening 2026 (raffinamento #3) — doc-selection ibrida per lo Stage B:
