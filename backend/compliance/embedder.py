@@ -25,6 +25,7 @@ Dependencies: chromadb>=1.5.0 (installed in requirements.txt)
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor
@@ -114,6 +115,30 @@ def _make_embedding_function():
         return _ThreadedONNXMiniLM(workers=_EMBED_MAX_WORKERS)
     except Exception:
         return None
+
+
+def warm_embedder() -> bool:
+    """Scalda il modello di embedding all'avvio del processo (speed only).
+
+    Su un container freddo il modello ONNX MiniLM viene scaricato e la
+    InferenceSession costruita DENTRO la prima `index_corpus`, cioè sul
+    critical path della prima analisi. Chiamata dal lifespan FastAPI su un
+    thread daemon, questa funzione fa lo stesso identico lavoro in anticipo:
+    stesso modello, stessi pesi, stessi vettori — cambia solo QUANDO viene
+    caricato. Ritorna True se il warm è riuscito (best-effort, mai raise).
+    """
+    try:
+        ef = _make_embedding_function()
+        if ef is None and ONNXMiniLM_L6_V2 is not None:
+            ef = ONNXMiniLM_L6_V2()
+        if ef is None:
+            return False
+        ef(["warmup"])  # download (se serve) + InferenceSession + tokenizer
+        return True
+    except Exception as e:  # noqa: BLE001 — il warmup non deve mai rompere l'avvio
+        logging.getLogger("compliance.embedder").warning(
+            "Embedder warmup failed (non-blocking): %s", e)
+        return False
 
 _MARKER_RE = re.compile(r'\[(?:PAGE (\d+)|SHEET "([^"]+)")\]')
 

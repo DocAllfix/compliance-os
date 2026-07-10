@@ -122,6 +122,22 @@ from scheduler import install_scheduler  # noqa: E402
 install_scheduler(app)
 
 
+# Speed 2026-07 — warmup embedder: su container freddo il download del modello
+# ONNX + build della InferenceSession avverrebbero dentro la PRIMA analisi
+# (critical path). Thread daemon best-effort: non blocca l'avvio, mai raise.
+@app.on_event("startup")
+async def _warm_embedder_on_startup() -> None:  # pragma: no cover
+    import threading
+
+    def _warm() -> None:
+        from compliance.embedder import warm_embedder
+        ok = warm_embedder()
+        logging.getLogger("api_server").info(
+            "Embedder warmup %s", "completed" if ok else "skipped/failed (non-blocking)")
+
+    threading.Thread(target=_warm, name="embedder-warmup", daemon=True).start()
+
+
 # ── Modelli Pydantic ───────────────────────────────────────────────────────────
 class LoginRequest(BaseModel):
     username: str
