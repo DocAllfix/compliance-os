@@ -1058,9 +1058,17 @@ def _build_batch_user_prompt(
 # transient Azure errors (429 / timeout / connection) are retried with
 # exponential backoff (Azure-only). Phase 3 previously had
 # NO retry at all, so a single transient 429 silently degraded a whole batch.
-GAP_LLM_MAX_RETRIES = 3
+#
+# Hardening 2026-07: i soli errori TRANSITORI hanno un budget separato e più
+# paziente (6 tentativi, backoff fino a 60s + jitter). Ragione: con i worker
+# deep alti (18/norma su Railway) un burst sopra i 3M TPM produce 429 a
+# raffica; con 3 retry corti una clausola poteva esaurirli e ripiegare sul
+# verdetto Stage A (= degradazione di precisione silenziosa). Aspettare e
+# rimandare la STESSA richiesta (temp 0, seed 42) non cambia mai l'output.
+GAP_LLM_MAX_RETRIES = 3            # risposte vuote / parse-fail (invariato)
+GAP_LLM_TRANSIENT_RETRIES = 6      # 429 / timeout / connection
 GAP_LLM_RETRY_BASE_DELAY = 2.0
-GAP_LLM_RETRY_MAX_DELAY = 30.0
+GAP_LLM_RETRY_MAX_DELAY = 60.0
 
 
 def _call_llm(messages: List[Dict[str, str]], max_tokens: int = 1024,
@@ -1090,7 +1098,16 @@ def _call_llm(messages: List[Dict[str, str]], max_tokens: int = 1024,
         _log.error(f"Azure client init failed — no fallback configured: {e}")
         return ""
 
-    for attempt in range(GAP_LLM_MAX_RETRIES):
+    import random as _random
+
+    # Contatori separati (Hardening 2026-07): le risposte vuote mantengono il
+    # budget storico di 3; gli errori transitori (429/timeout/connection) hanno
+    # un budget di 6 con backoff esponenziale + jitter fino a 60s, così un
+    # burst sopra quota ASPETTA invece di degradare al verdetto Stage A.
+    empty_attempts = 0
+    transient_attempts = 0
+    while True:
+        backoff_step = 0
         try:
             stream = client.chat_stream(messages=messages, max_tokens=max_tokens)
             chunks: List[str] = []
@@ -1104,10 +1121,14 @@ def _call_llm(messages: List[Dict[str, str]], max_tokens: int = 1024,
             raw = "".join(chunks)
             if raw.strip():
                 return raw
+            empty_attempts += 1
             _log.warning(
                 "[Phase 3] Azure returned empty response (attempt %d/%d) — retrying",
-                attempt + 1, GAP_LLM_MAX_RETRIES,
+                empty_attempts, GAP_LLM_MAX_RETRIES,
             )
+            if empty_attempts >= GAP_LLM_MAX_RETRIES:
+                break
+            backoff_step = empty_attempts
         except Exception as e:
             msg = str(e).lower()
             is_transient = (
@@ -1115,22 +1136,24 @@ def _call_llm(messages: List[Dict[str, str]], max_tokens: int = 1024,
                 or "429" in msg or "timeout" in msg
                 or "connection" in msg
             )
-            _log.warning(
-                "[Phase 3] Azure attempt %d/%d failed (%s): %s",
-                attempt + 1, GAP_LLM_MAX_RETRIES,
-                "transient" if is_transient else "fatal",
-                str(e)[:200],
-            )
             if not is_transient:
+                _log.warning("[Phase 3] Azure failed (fatal): %s", str(e)[:200])
                 break  # non-retryable
-        if attempt < GAP_LLM_MAX_RETRIES - 1:
-            _time.sleep(min(
-                GAP_LLM_RETRY_BASE_DELAY * (2 ** attempt),
-                GAP_LLM_RETRY_MAX_DELAY,
-            ))
+            transient_attempts += 1
+            _log.warning(
+                "[Phase 3] Azure attempt %d/%d failed (transient): %s",
+                transient_attempts, GAP_LLM_TRANSIENT_RETRIES, str(e)[:200],
+            )
+            if transient_attempts >= GAP_LLM_TRANSIENT_RETRIES:
+                break
+            backoff_step = transient_attempts
+        _time.sleep(min(
+            GAP_LLM_RETRY_BASE_DELAY * (2 ** (backoff_step - 1)),
+            GAP_LLM_RETRY_MAX_DELAY,
+        ) * _random.uniform(0.8, 1.2))
 
-    _log.error("[Phase 3] Azure exhausted after %d attempts — no fallback configured",
-               GAP_LLM_MAX_RETRIES)
+    _log.error("[Phase 3] Azure exhausted (%d empty, %d transient) — no fallback configured",
+               empty_attempts, transient_attempts)
     return ""
 
 

@@ -175,9 +175,13 @@ EVIDENCE_MAX_OUTPUT_TOKENS = 12000
 EVIDENCE_DOC_CHAR_CAP = 15_000
 
 # Retry config for transient 429 / connection errors (per single batch).
-EVIDENCE_MAX_RETRIES = 3
+# Hardening 2026-07 (speculare a _call_llm Phase 3): budget separato e più
+# paziente per i soli errori transitori — aspettare e rimandare la stessa
+# richiesta non cambia mai l'output; esaurire i retry produce carte sintetiche.
+EVIDENCE_MAX_RETRIES = 3           # risposte vuote (invariato)
+EVIDENCE_TRANSIENT_RETRIES = 6     # 429 / timeout / connection
 EVIDENCE_RETRY_BASE_DELAY = 2.0
-EVIDENCE_RETRY_MAX_DELAY = 30.0
+EVIDENCE_RETRY_MAX_DELAY = 60.0
 
 
 def _extract_evidence(
@@ -455,7 +459,11 @@ def _call_llm_for_batch(
 
     # Try Azure with local retry/backoff for transient errors.
     if azure_client is not None:
-        for attempt in range(EVIDENCE_MAX_RETRIES):
+        import random as _random
+        empty_attempts = 0
+        transient_attempts = 0
+        while True:
+            backoff_step = 0
             try:
                 stream = azure_client.chat_stream(
                     messages=messages,
@@ -473,10 +481,14 @@ def _call_llm_for_batch(
                 raw = "".join(chunks)
                 if raw.strip():
                     return raw
+                empty_attempts += 1
                 _log.warning(
-                    "[Phase 2] Batch %d/%d Azure returned empty (attempt %d) — retrying",
-                    batch_idx + 1, total_batches, attempt + 1,
+                    "[Phase 2] Batch %d/%d Azure returned empty (attempt %d/%d) — retrying",
+                    batch_idx + 1, total_batches, empty_attempts, EVIDENCE_MAX_RETRIES,
                 )
+                if empty_attempts >= EVIDENCE_MAX_RETRIES:
+                    break
+                backoff_step = empty_attempts
             except Exception as e:
                 msg = str(e).lower()
                 is_transient = (
@@ -484,21 +496,26 @@ def _call_llm_for_batch(
                     or "429" in msg or "timeout" in msg
                     or "connection" in msg
                 )
-                _log.warning(
-                    "[Phase 2] Batch %d/%d Azure attempt %d failed (%s): %s",
-                    batch_idx + 1, total_batches, attempt + 1,
-                    "transient" if is_transient else "fatal",
-                    str(e)[:200],
-                )
                 if not is_transient:
+                    _log.warning(
+                        "[Phase 2] Batch %d/%d Azure failed (fatal): %s",
+                        batch_idx + 1, total_batches, str(e)[:200],
+                    )
                     break  # non-retryable
-            # Backoff before next attempt
-            if attempt < EVIDENCE_MAX_RETRIES - 1:
-                wait = min(
-                    EVIDENCE_RETRY_BASE_DELAY * (2 ** attempt),
-                    EVIDENCE_RETRY_MAX_DELAY,
+                transient_attempts += 1
+                _log.warning(
+                    "[Phase 2] Batch %d/%d Azure attempt %d/%d failed (transient): %s",
+                    batch_idx + 1, total_batches,
+                    transient_attempts, EVIDENCE_TRANSIENT_RETRIES, str(e)[:200],
                 )
-                time.sleep(wait)
+                if transient_attempts >= EVIDENCE_TRANSIENT_RETRIES:
+                    break
+                backoff_step = transient_attempts
+            # Backoff before next attempt (jitter per de-sincronizzare i worker)
+            time.sleep(min(
+                EVIDENCE_RETRY_BASE_DELAY * (2 ** (backoff_step - 1)),
+                EVIDENCE_RETRY_MAX_DELAY,
+            ) * _random.uniform(0.8, 1.2))
 
     # Fase 2 consolidamento: provider Azure-ONLY (fallback Gemini rimosso,
     # decisione utente 2026-06-12). Su esaurimento retry il chiamante emette

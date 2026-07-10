@@ -204,7 +204,14 @@ class AzureOpenAIClientV2:
             raise ValueError("AZURE_OPENAI_ENDPOINT non settato.")
 
         from openai import OpenAI  # type: ignore
-        self._sdk = OpenAI(base_url=endpoint, api_key=api_key)
+        # Speed 2026-07 — timeout esplicito: senza, una connessione appesa
+        # blocca un worker per il default httpx (~600s) e ogni fase joina su
+        # f.result() → una chiamata morta stalla l'intera fase. 180s è largo
+        # (TTFT dei prompt Stage B ~67k token sotto carico) ma finito: la
+        # chiamata fallita rientra negli stessi retry/backoff dei chiamanti,
+        # rimandando la STESSA richiesta (temperature 0, seed 42).
+        _timeout = float(os.environ.get("LLM_REQUEST_TIMEOUT", "180"))
+        self._sdk = OpenAI(base_url=endpoint, api_key=api_key, timeout=_timeout)
         self.deployment = self._resolve_deployment(profile)
 
     @staticmethod
