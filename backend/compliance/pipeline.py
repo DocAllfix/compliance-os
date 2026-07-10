@@ -431,11 +431,15 @@ def _build_user_prompt_for_batch(batch_docs: List[Dict[str, Any]]) -> str:
     for i, doc in enumerate(batch_docs, 1):
         content = _sample_doc_text(doc.get("content") or "", EVIDENCE_DOC_CHAR_CAP)
         parts.append(f"### DOCUMENT {i}: {doc.get('filename', 'unknown')}\n{content}")
+    # Content-filter fix 2026-07-10: istruzione PRIMA dei documenti (un doc che
+    # termina con un'istruzione = firma di indirect injection per i Prompt
+    # Shields Azure → 400). Contenuto invariato, solo posizione.
     return (
-        f"## DOCUMENTS TO ANALYSE ({len(batch_docs)} files)\n\n"
+        f"## DOCUMENTS TO ANALYSE ({len(batch_docs)} files)\n"
+        "Analyse all documents following the instructions. Produce a complete "
+        "YAML output with meta block and one card per document.\n\n"
         + "\n\n".join(parts)
-        + "\n\n---\n\nAnalyse all documents following the instructions. "
-          "Produce a complete YAML output with meta block and one card per document."
+        + "\n\n--- END OF DOCUMENTS ---"
     )
 
 

@@ -385,6 +385,13 @@ def _build_user_prompt(
         f"- severity: {gap.severity}, score: {gap.score}",
         f"- finding: {gap.finding[:300]}",
         "",
+        # Content-filter fix 2026-07-10: istruzione PRIMA dei documenti — un
+        # documento che termina con un'istruzione è la firma di una indirect
+        # prompt injection per gli Azure Prompt Shields (400 deterministico,
+        # riprodotto sulla 2.7). Contenuto invariato, solo posizione.
+        "Apply the verification protocol to the documents below and return "
+        "the JSON object as instructed.",
+        "",
         f"## Documents ({len(doc_names)} full texts)",
     ]
     for key in doc_names:
@@ -393,9 +400,7 @@ def _build_user_prompt(
         parts.append(text)
         parts.append("")
 
-    parts.append(
-        "Apply the verification protocol and return the JSON object as instructed."
-    )
+    parts.append("--- END OF DOCUMENTS ---")
     return "\n".join(parts)
 
 

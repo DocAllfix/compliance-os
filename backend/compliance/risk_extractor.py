@@ -134,10 +134,16 @@ def _extract_document(
     system_prompt: str,
     llm_call: Callable,
 ) -> Optional[Dict[str, Any]]:
+    # Content-filter fix 2026-07-10: l'istruzione va PRIMA del documento.
+    # Un documento che TERMINA con un'istruzione è la firma esatta di una
+    # indirect prompt injection per gli Azure Prompt Shields → 400 deterministico
+    # (riprodotto sul pack Fred). Contenuto identico, cambia solo la posizione.
     user_prompt = (
+        "Extract the structured risk register from the document below, "
+        "following the system instructions.\n\n"
         f"### DOCUMENT: {fname}\n"
         + text[:RISK_MAX_DOC_CHARS]
-        + "\n\nExtract the structured risk register as instructed."
+        + "\n\n--- END OF DOCUMENT ---"
     )
     raw = llm_call(
         [
