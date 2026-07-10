@@ -1379,7 +1379,9 @@ if __name__ == "__main__":
     uvicorn.run(
         "api_server:app",
         host="0.0.0.0",
-        port=8000,
-        reload=True,
+        port=int(os.environ.get("PORT", "8000")),
+        # Speed 2026-07: il file-watcher di reload è overhead in produzione
+        # (Railway/tunnel). Dev locale: UVICORN_RELOAD=1 per riattivarlo.
+        reload=os.environ.get("UVICORN_RELOAD", "0").strip() in ("1", "true", "True"),
         log_level="info",
     )
