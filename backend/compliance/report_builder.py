@@ -3,15 +3,19 @@ Amisys QHSE — DOCX Report Builder.
 
 Produces a manager-friendly gap analysis report using python-docx.
 
-Structure (Sprint 4 — 7 sections):
-  Cover page
-  §1 Company Snapshot                      (from executive_summary.company_snapshot)
-  §2 Executive Narrative                   (from executive_summary.executive_narrative)
-  §3 Document Expiry Status                (from expiry_report)
-  §4 Single Points of Failure              (if any)
-  §5 Top 10 Priority Integrations          (from executive_summary.top_priority_integrations)
-  §6 Detailed Clause Analysis              (per-norm: Critical Findings, Action Plan, Clause Matrix)
-  §7 Methodology & Disclaimer
+Structure (rev. 2026-07 — multi-norm):
+  Cover page + Contents (static index)
+  §1  Company Snapshot                     (from executive_summary.company_snapshot)
+  §2  Executive Summary                    (integrated overview table + executive_narrative + per-norm blocks)
+  §3  Document Expiry Status               (from expiry_report)
+  §3B Required Documented Information      (Phase 2.6)
+  §3C Cross-Clause Coherence               (Phase 3.5)
+  §3D Risk Register (as extracted)         (Phase 2.7)
+  §4  Single Points of Failure             (norm-labelled)
+  §5  Top 10 Priority Integrations         (from executive_summary.top_priority_integrations)
+  §6  Critical Findings / §6B Action Plan (Standard column) / §6C Manual NCs
+  §6D Clause Matrix per norm / §6E Set-aside Findings
+  §7  Methodology & Disclaimer
 
 Sections backed by optional fields (executive_summary, expiry_report)
 are skipped silently when those fields are None — older analyses that
@@ -46,6 +50,7 @@ from compliance.schemas import (
     ExpiredDocument,
     ExpiryReport,
     NormGapReport,
+    RiskRegisterExtract,
 )
 
 
@@ -114,12 +119,60 @@ def build_docx_report(
     dismissed_ids = {nc.get("clause_id") for nc in dismissed_rows if nc.get("clause_id")}
     manual_ncs = [nc for nc in register if nc.get("source") == "manual" and not nc.get("dismissed")]
 
+    # Multi-norm 2026-07 — mappa clause_id → norma di appartenenza: le sezioni
+    # che mischiano norme (SPoF, Critical Findings, Action Plan) etichettano
+    # ogni finding col suo standard, altrimenti "10.2" di 9001 e 45001 sono
+    # indistinguibili per chi legge il report offline.
+    norm_of = {g.clause_id: nr.norm for nr in result.norms for g in nr.clauses}
+
     _add_cover(doc, result)
+    doc.add_page_break()
+
+    # Indice statico — le voci rispecchiano ESATTAMENTE le condizioni con cui
+    # le sezioni vengono aggiunte sotto (tenere sincronizzati).
+    _all_gaps_toc = [g for nr in result.norms for g in nr.clauses]
+    _operative_toc = [g for g in _all_gaps_toc if g.clause_id not in dismissed_ids]
+    toc_entries: List[str] = []
+    if result.executive_summary is not None:
+        toc_entries.append("§1  Company Snapshot")
+    toc_entries.append("§2  Executive Summary")
+    if result.expiry_report is not None and (
+        result.expiry_report.expired_documents or result.expiry_report.expiring_soon
+    ):
+        toc_entries.append("§3  Document Expiry Status")
+    if result.documented_info_report is not None and (
+        result.documented_info_report.absent_count > 0
+        or result.documented_info_report.weak_count > 0
+    ):
+        toc_entries.append("§3B  Required Documented Information")
+    if result.cross_clause_findings:
+        toc_entries.append("§3C  Cross-Clause Coherence")
+    if result.risk_register_extract is not None and result.risk_register_extract.total_risks > 0:
+        toc_entries.append("§3D  Risk Register (as extracted)")
+    if any(g.is_spof and g.severity == "MAJOR" for g in _operative_toc):
+        toc_entries.append("§4  Single Points of Failure")
+    if result.executive_summary is not None and result.executive_summary.top_priority_integrations:
+        toc_entries.append("§5  Top Priority Integrations")
+    if any(g.severity == "MAJOR" for g in _operative_toc):
+        toc_entries.append("§6  Critical Findings")
+    if any(g.severity in ("MAJOR", "MINOR") for g in _operative_toc):
+        toc_entries.append("§6B  Action Plan")
+    if manual_ncs:
+        toc_entries.append("§6C  Manually Recorded Nonconformities")
+    for nr in result.norms:
+        toc_entries.append(f"§6D  Clause Matrix — {nr.norm}")
+    if dismissed_rows:
+        toc_entries.append("§6E  Set-aside Findings")
+    toc_entries.append("§7  Methodology & Disclaimer")
+    _add_toc(doc, toc_entries)
     doc.add_page_break()
 
     # §1 Company Snapshot — only when the LLM produced an executive summary
     if result.executive_summary is not None:
-        _add_company_snapshot(doc, result.executive_summary.company_snapshot)
+        _add_company_snapshot(
+            doc, result.executive_summary.company_snapshot,
+            assessed_norms=list(result.context.norms or []),
+        )
         doc.add_page_break()
 
     # §2 Executive Narrative + per-norm summary
@@ -146,6 +199,12 @@ def build_docx_report(
         _add_cross_clause_section(doc, result.cross_clause_findings)
         doc.add_page_break()
 
+    # §3D Risk Register (Phase 2.7) — parità col frontend: il registro
+    # estratto coi flag deterministici sui campi mancanti (2026-07)
+    if result.risk_register_extract is not None and result.risk_register_extract.total_risks > 0:
+        _add_risk_register_section(doc, result.risk_register_extract)
+        doc.add_page_break()
+
     all_gaps = [g for norm in result.norms for g in norm.clauses]
     # Fase 4: i finding messi da parte escono dalle sezioni operative
     operative_gaps = [g for g in all_gaps if g.clause_id not in dismissed_ids]
@@ -153,7 +212,7 @@ def build_docx_report(
 
     # §4 Single Points of Failure
     if spof_gaps:
-        _add_spof_section(doc, spof_gaps)
+        _add_spof_section(doc, spof_gaps, norm_of=norm_of)
         doc.add_page_break()
 
     # §5 Top 10 Priority Integrations — manager-friendly bullet list
@@ -164,12 +223,12 @@ def build_docx_report(
     # §6 Detailed Clause Analysis
     major_gaps = [g for g in operative_gaps if g.severity == "MAJOR"]
     if major_gaps:
-        _add_critical_findings(doc, major_gaps)
+        _add_critical_findings(doc, major_gaps, norm_of=norm_of)
         doc.add_page_break()
 
     actionable = [g for g in operative_gaps if g.severity in ("MAJOR", "MINOR")]
     if actionable:
-        _add_action_plan(doc, actionable)
+        _add_action_plan(doc, actionable, norm_of=norm_of)
         doc.add_page_break()
 
     # §6b Manually recorded nonconformities (Fase 4)
@@ -265,8 +324,58 @@ def _add_cover(doc: Document, result: ComplianceAnalysisResult) -> None:
 def _add_executive_summary(
     doc: Document, result: ComplianceAnalysisResult, dismissed_ids: set | None = None
 ) -> None:
-    _h1(doc, "Executive Summary")
+    _h1(doc, "§2  Executive Summary")
     dismissed_ids = dismissed_ids or set()
+
+    # Colpo d'occhio integrato (2026-07): una riga per standard, prima di
+    # qualsiasi prosa — la prima cosa che un manager cerca in uno scan multi-norma.
+    if len(result.norms) >= 1:
+        table = doc.add_table(rows=1, cols=7)
+        table.style = "Table Grid"
+        _set_col_widths(table, [Inches(1.7), Inches(0.8), Inches(0.7), Inches(0.7), Inches(0.9), Inches(0.9), Inches(0.6)])
+        for i, h in enumerate(["Standard", "Score", "Major", "Minor", "Observations", "Conformant", "SPoF"]):
+            cell = table.rows[0].cells[i]
+            cell.text = h
+            run = cell.paragraphs[0].runs[0]
+            run.font.bold = True
+            run.font.size = Pt(9)
+            run.font.color.rgb = C_WHITE
+            _set_cell_bg(cell, "1B2944")
+        for norm in result.norms:
+            r = table.add_row()
+            vals = [
+                norm.norm,
+                f"{norm.overall_score}/100",
+                str(norm.major_count),
+                str(norm.minor_count),
+                str(norm.observation_count),
+                str(norm.conformant_count),
+                str(norm.spof_count),
+            ]
+            for j, v in enumerate(vals):
+                r.cells[j].text = v
+                run = r.cells[j].paragraphs[0].runs[0]
+                run.font.size = Pt(9)
+            score = norm.overall_score
+            score_color = C_CONFORMANT if score >= 75 else C_MINOR if score >= 50 else C_MAJOR
+            r.cells[1].paragraphs[0].runs[0].font.bold = True
+            r.cells[1].paragraphs[0].runs[0].font.color.rgb = score_color
+            if norm.major_count:
+                r.cells[2].paragraphs[0].runs[0].font.color.rgb = C_MAJOR
+                r.cells[2].paragraphs[0].runs[0].font.bold = True
+            if norm.spof_count:
+                r.cells[6].paragraphs[0].runs[0].font.color.rgb = C_SPOF
+                r.cells[6].paragraphs[0].runs[0].font.bold = True
+        doc.add_paragraph()
+
+    # Narrative manageriale del Phase 4 (2026-07: prima veniva scartata —
+    # esisteva solo nel frontend, mai nel DOCX).
+    if result.executive_summary is not None:
+        narrative = (result.executive_summary.executive_narrative or "").strip()
+        if narrative:
+            for para in [p.strip() for p in narrative.split("\n") if p.strip()]:
+                _body(doc, para)
+            doc.add_paragraph()
 
     for norm in result.norms:
         _h2(doc, norm.norm)
@@ -312,8 +421,11 @@ def _add_executive_summary(
 
 # ── SPoF section ──────────────────────────────────────────────────────────────
 
-def _add_spof_section(doc: Document, spofs: List[ClauseGap]) -> None:
-    _h1(doc, "Single Points of Failure")
+def _add_spof_section(
+    doc: Document, spofs: List[ClauseGap], norm_of: Optional[dict] = None
+) -> None:
+    _h1(doc, "§4  Single Points of Failure")
+    norm_of = norm_of or {}
 
     p = doc.add_paragraph()
     r = p.add_run("The following clauses represent Single Points of Failure (SPoF) — their absence or failure undermines the entire management system and must be addressed before any other non-conformity.")
@@ -323,7 +435,9 @@ def _add_spof_section(doc: Document, spofs: List[ClauseGap]) -> None:
     doc.add_paragraph()
 
     for gap in spofs:
-        _h2(doc, f"⚠  {gap.clause_title}", color=C_SPOF)
+        norm_label = norm_of.get(gap.clause_id, "")
+        prefix = f"[{_short_norm(norm_label)}]  " if norm_label else ""
+        _h2(doc, f"⚠  {prefix}{gap.clause_title}", color=C_SPOF)
         _body(doc, gap.finding)
 
         p = doc.add_paragraph()
@@ -347,11 +461,16 @@ def _add_spof_section(doc: Document, spofs: List[ClauseGap]) -> None:
 
 # ── Critical Findings ─────────────────────────────────────────────────────────
 
-def _add_critical_findings(doc: Document, majors: List[ClauseGap]) -> None:
-    _h1(doc, "Critical Findings")
+def _add_critical_findings(
+    doc: Document, majors: List[ClauseGap], norm_of: Optional[dict] = None
+) -> None:
+    _h1(doc, "§6  Critical Findings")
+    norm_of = norm_of or {}
 
     for gap in majors:
-        _h2(doc, gap.clause_title, color=C_MAJOR)
+        norm_label = norm_of.get(gap.clause_id, "")
+        prefix = f"[{_short_norm(norm_label)}]  " if norm_label else ""
+        _h2(doc, f"{prefix}{gap.clause_title}", color=C_MAJOR)
 
         table = doc.add_table(rows=1, cols=2)
         table.style = "Table Grid"
@@ -371,6 +490,8 @@ def _add_critical_findings(doc: Document, majors: List[ClauseGap]) -> None:
         table._tbl.remove(table.rows[0]._tr)
 
         add_row("Clause", gap.clause_title)
+        if norm_label:
+            add_row("Standard", norm_label)
         score_label = f"{gap.score}/100 — {gap.severity}"
         if gap.confidence is not None:
             score_label += f"   (confidence {round(gap.confidence * 100)}%)"
@@ -409,15 +530,18 @@ def _add_critical_findings(doc: Document, majors: List[ClauseGap]) -> None:
 
 # ── Action Plan table ─────────────────────────────────────────────────────────
 
-def _add_action_plan(doc: Document, gaps: List[ClauseGap]) -> None:
-    _h1(doc, "Action Plan")
+def _add_action_plan(
+    doc: Document, gaps: List[ClauseGap], norm_of: Optional[dict] = None
+) -> None:
+    _h1(doc, "§6B  Action Plan")
+    norm_of = norm_of or {}
 
-    table = doc.add_table(rows=1, cols=6)
+    table = doc.add_table(rows=1, cols=7)
     table.style = "Table Grid"
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
-    _set_col_widths(table, [Inches(0.6), Inches(1.3), Inches(2.3), Inches(1.2), Inches(0.9), Inches(0.7)])
+    _set_col_widths(table, [Inches(0.5), Inches(0.9), Inches(0.6), Inches(2.1), Inches(1.1), Inches(0.8), Inches(0.5)])
 
-    headers = ["Priority", "Clause", "Action", "Responsible", "Deadline", "Effort"]
+    headers = ["Priority", "Standard", "Clause", "Action", "Responsible", "Deadline", "Effort"]
     hrow = table.rows[0]
     for i, h in enumerate(headers):
         cell = hrow.cells[i]
@@ -434,7 +558,8 @@ def _add_action_plan(doc: Document, gaps: List[ClauseGap]) -> None:
         row = table.add_row()
         vals = [
             str(i),
-            gap.clause_id.replace("_", " "),
+            _short_norm(norm_of.get(gap.clause_id, "")) or "—",
+            _clause_display(gap.clause_id),
             gap.remediation.what[:120] + ("…" if len(gap.remediation.what) > 120 else ""),
             gap.remediation.who,
             gap.remediation.when,
@@ -461,7 +586,7 @@ def _add_action_plan(doc: Document, gaps: List[ClauseGap]) -> None:
 def _add_clause_matrix(
     doc: Document, norm: NormGapReport, dismissed_ids: set | None = None
 ) -> None:
-    _h1(doc, f"Clause Matrix — {norm.norm}")
+    _h1(doc, f"§6D  Clause Matrix — {norm.norm}")
     dismissed_ids = dismissed_ids or set()
 
     table = doc.add_table(rows=1, cols=4)
@@ -512,6 +637,32 @@ def _add_clause_matrix(
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _short_norm(norm: str) -> str:
+    """'ISO 9001:2015' → 'ISO 9001'; i set custom restano il loro label."""
+    return norm.split(":")[0].strip() if ":" in norm else norm
+
+
+_KNOWN_PREFIXES = {"9001", "14001", "45001"}
+
+
+def _clause_display(clause_id: str) -> str:
+    """'9001_10_2' → '10.2'; '45001_8_1_4' → '8.1.4'; id custom → invariato."""
+    if "_" in clause_id:
+        prefix, rest = clause_id.split("_", 1)
+        if prefix in _KNOWN_PREFIXES and rest:
+            return rest.replace("_", ".")
+    return clause_id
+
+
+def _add_toc(doc: Document, entries: List[str]) -> None:
+    """Indice statico (senza numeri di pagina: i § sono la navigazione)."""
+    _h1(doc, "Contents")
+    for entry in entries:
+        p = doc.add_paragraph(entry)
+        p.runs[0].font.size = Pt(10)
+        p.paragraph_format.space_after = Pt(2)
+
 
 def _h1(doc: Document, text: str, color: RGBColor = C_DARK) -> None:
     p = doc.add_paragraph()
@@ -641,7 +792,10 @@ def _add_bottom_border(paragraph) -> None:
 
 # ── §1 Company Snapshot (Sprint 4) ───────────────────────────────────────────
 
-def _add_company_snapshot(doc: Document, snap: CompanySnapshot) -> None:
+def _add_company_snapshot(
+    doc: Document, snap: CompanySnapshot,
+    assessed_norms: Optional[List[str]] = None,
+) -> None:
     _h1(doc, "§1  Company Snapshot")
 
     table = doc.add_table(rows=0, cols=2)
@@ -663,7 +817,15 @@ def _add_company_snapshot(doc: Document, snap: CompanySnapshot) -> None:
     row("Sector",    snap.sector)
     row("Size",      snap.size)
     row("Sites",     snap.sites_summary)
-    row("Standards", ", ".join(snap.certified_standards) if snap.certified_standards else "—")
+    # 2026-07: "—" nudo era ambiguo. Se non risultano certificazioni, dirlo
+    # esplicitamente e mostrare gli standard in valutazione (context.norms).
+    if snap.certified_standards:
+        row("Certified standards", ", ".join(snap.certified_standards))
+    elif assessed_norms:
+        row("Certified standards",
+            "None evidenced — working towards: " + ", ".join(assessed_norms))
+    else:
+        row("Certified standards", "—")
 
     if snap.key_roles:
         r = table.add_row()
@@ -734,11 +896,24 @@ def _add_expiry_table(
         run.font.color.rgb = C_WHITE
         _set_cell_bg(cell, "1B2944")
 
+    # 2026-07: file omonimi in cartelle diverse (es. due "SLC.pdf") vanno
+    # disambiguati con la cartella padre, altrimenti la riga sembra duplicata.
+    base_counts: dict = {}
+    for d in docs:
+        base_counts[_last_path_segment(d.file_name)] = base_counts.get(_last_path_segment(d.file_name), 0) + 1
+
+    def _display_name(path: str) -> str:
+        base = _last_path_segment(path)
+        if base_counts.get(base, 0) <= 1:
+            return base
+        parts = (path or "").replace("\\", "/").rsplit("/", 2)
+        return "/".join(parts[-2:]) if len(parts) >= 2 else base
+
     for idx, d in enumerate(docs):
         r = table.add_row()
         days_value = abs(d.days_overdue) if display_absolute else d.days_overdue
         vals = [
-            _last_path_segment(d.file_name),
+            _display_name(d.file_name),
             d.doc_type,
             d.expiry_date,
             str(days_value),
@@ -865,7 +1040,11 @@ def _add_cross_clause_section(doc: Document, findings: List[CrossClauseFinding])
         badge.font.color.rgb = _CHAIN_STATUS_COLOR.get(f.status, C_DARK)
         title = p.add_run(f.title)
         title.font.bold = True
-        chain = p.add_run(f"   ({' → '.join(f.clause_ids)})")
+        # 2026-07: id leggibili — "(ISO 14001: 6.1.2 → 8.1 → 9.1)" invece dei
+        # clause_id grezzi "14001_6_1_2 → …".
+        chain_ids = " → ".join(_clause_display(cid) for cid in f.clause_ids)
+        chain_label = f"{_short_norm(f.norm)}: {chain_ids}" if f.norm else chain_ids
+        chain = p.add_run(f"   ({chain_label})")
         chain.font.size = Pt(8)
         chain.font.color.rgb = C_GREY
         p.paragraph_format.space_before = Pt(8)
@@ -883,6 +1062,86 @@ def _add_cross_clause_section(doc: Document, findings: List[CrossClauseFinding])
             run = p3.add_run(";  ".join(refs))
             run.font.size = Pt(9)
             run.font.color.rgb = C_GREY
+
+
+# ── §3D Risk Register (Phase 2.7 — 2026-07) ──────────────────────────────────
+
+def _add_risk_register_section(doc: Document, extract: RiskRegisterExtract) -> None:
+    """Parità col frontend: registro rischi estratto, con i campi mancanti
+    (score/mitigazione/owner) marcati in severity color. I dati vengono dal
+    Phase 2.7 (estrazione strutturata + flag deterministici)."""
+    _h1(doc, "§3D  Risk Register (as extracted)")
+
+    _body(doc, (
+        f"The analysis extracted a structured risk register from the risk "
+        f"documents in the package: {extract.total_risks} risk"
+        f"{'s' if extract.total_risks != 1 else ''} across "
+        f"{len(extract.documents)} document{'s' if len(extract.documents) != 1 else ''}. "
+        f"Of these, {extract.unscored_count} carry no score (assessment criteria "
+        f"declared but not applied), {extract.unmitigated_count} have no stated "
+        f"mitigation, and {extract.unowned_count} have no named owner. "
+        f"Missing fields are highlighted below exactly as found — placeholder "
+        f"text such as 'to be defined' counts as missing."
+    ))
+
+    for rdoc in extract.documents:
+        _h2(doc, _last_path_segment(rdoc.file_name))
+        if rdoc.methodology_declared and rdoc.methodology:
+            p = doc.add_paragraph()
+            p.add_run("Methodology declared: ").font.bold = True
+            run = p.add_run(rdoc.methodology)
+            run.font.size = Pt(9)
+        else:
+            p = doc.add_paragraph()
+            run = p.add_run("No assessment methodology declared in this document.")
+            run.font.color.rgb = C_MAJOR
+            run.font.size = Pt(9)
+
+        if not rdoc.risks:
+            continue
+
+        table = doc.add_table(rows=1, cols=5)
+        table.style = "Table Grid"
+        _set_col_widths(table, [Inches(0.6), Inches(2.5), Inches(0.7), Inches(1.7), Inches(1.0)])
+        for i, h in enumerate(["Ref", "Risk", "Score", "Mitigation", "Owner"]):
+            cell = table.rows[0].cells[i]
+            cell.text = h
+            run = cell.paragraphs[0].runs[0]
+            run.font.bold = True
+            run.font.size = Pt(9)
+            run.font.color.rgb = C_WHITE
+            _set_cell_bg(cell, "1B2944")
+
+        for idx, risk in enumerate(rdoc.risks):
+            r = table.add_row()
+            vals = [
+                risk.ref or "—",
+                risk.description,
+                risk.score if risk.score_present and risk.score else "not scored",
+                risk.mitigation if risk.mitigation_present and risk.mitigation else "missing",
+                risk.owner if risk.owner_present and risk.owner else "missing",
+            ]
+            for j, v in enumerate(vals):
+                r.cells[j].text = v
+                run = r.cells[j].paragraphs[0].runs[0]
+                run.font.size = Pt(9)
+            # Campi mancanti in severity color (flag deterministici Phase 2.7)
+            if not risk.score_present:
+                r.cells[2].paragraphs[0].runs[0].font.color.rgb = C_MAJOR
+                r.cells[2].paragraphs[0].runs[0].font.bold = True
+            if not risk.mitigation_present:
+                r.cells[3].paragraphs[0].runs[0].font.color.rgb = C_MAJOR
+                r.cells[3].paragraphs[0].runs[0].font.bold = True
+            if not risk.owner_present:
+                r.cells[4].paragraphs[0].runs[0].font.color.rgb = C_MINOR
+                r.cells[4].paragraphs[0].runs[0].font.bold = True
+
+            incomplete = not (risk.score_present and risk.mitigation_present and risk.owner_present)
+            bg = "FFF7ED" if incomplete else ("F8FAFC" if idx % 2 == 0 else "FFFFFF")
+            for cell in r.cells:
+                _set_cell_bg(cell, bg)
+
+        doc.add_paragraph()
 
 
 # ── §5 Top 10 Priority Integrations (Sprint 4) ───────────────────────────────
@@ -911,7 +1170,7 @@ def _add_priority_integrations(doc: Document, integrations: List[str]) -> None:
 # ── §6b Manually recorded nonconformities (Fase 4) ───────────────────────────
 
 def _add_manual_ncs_section(doc: Document, manual_ncs: List[dict]) -> None:
-    _h1(doc, "§6b  Manually Recorded Nonconformities")
+    _h1(doc, "§6C  Manually Recorded Nonconformities")
     _body(doc, (
         "The following items were recorded directly by the organisation, "
         "alongside the findings produced by the analysis."
@@ -940,7 +1199,7 @@ def _add_manual_ncs_section(doc: Document, manual_ncs: List[dict]) -> None:
 # ── §6c Set-aside findings (Fase 4 — PRD §1.4.8) ─────────────────────────────
 
 def _add_set_aside_section(doc: Document, dismissed_rows: List[dict]) -> None:
-    _h1(doc, "§6c  Set-aside Findings")
+    _h1(doc, "§6E  Set-aside Findings")
     _body(doc, (
         "The organisation has chosen to set aside the following findings. "
         "They are excluded from the action plan above but remain on record "
