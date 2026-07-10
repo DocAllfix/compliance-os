@@ -86,8 +86,10 @@ def test_dismissed_clause_leaves_operative_sections():
     assert leaks == [], f"dismissed finding leaked into operative sections: {leaks}"
 
     # in Clause Matrix la riga resta ma marcata Set aside
+    # (colonne 2026-07: Clause | Title | Score | Severity | Confidence)
     matrix_row = next(r for r in rows if r and r[0] == "9001_7_5")
-    assert matrix_row[-1] == "Set aside"
+    assert matrix_row[3] == "Set aside"
+    assert matrix_row[4] == "—"  # confidence assente nei gap sintetici
 
     # appendice presente con motivazione
     assert any("SET-ASIDE" in p.upper() for p in paragraphs)
@@ -99,4 +101,4 @@ def test_without_dismissals_report_is_unchanged():
     assert any("7.5 Documented information" in p for p in paragraphs)
     assert not any("SET-ASIDE" in p.upper() for p in paragraphs)
     matrix_row = next(r for r in rows if r and r[0] == "9001_7_5")
-    assert matrix_row[-1] == "MAJOR"
+    assert matrix_row[3] == "MAJOR"
