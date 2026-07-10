@@ -445,7 +445,11 @@ def _add_spof_section(
         p.add_run(gap.remediation.what)
 
         p2 = doc.add_paragraph()
-        p2.add_run(f"Responsible: {gap.remediation.who}   ·   Deadline: {gap.remediation.when}   ·   Effort: {gap.remediation.effort}")
+        conf_part = (
+            f"   ·   Confidence: {round(gap.confidence * 100)}%"
+            if gap.confidence is not None else ""
+        )
+        p2.add_run(f"Responsible: {gap.remediation.who}   ·   Deadline: {gap.remediation.when}   ·   Effort: {gap.remediation.effort}{conf_part}")
         p2.runs[0].font.color.rgb = C_GREY
         p2.runs[0].font.size = Pt(9)
 
@@ -589,11 +593,13 @@ def _add_clause_matrix(
     _h1(doc, f"§6D  Clause Matrix — {norm.norm}")
     dismissed_ids = dismissed_ids or set()
 
-    table = doc.add_table(rows=1, cols=4)
+    # 2026-07: colonna Confidence — dato chiave per leggere i verdetti
+    # borderline (i flip tra run stanno sotto ~0.85; i MAJOR stabili a 0.95+).
+    table = doc.add_table(rows=1, cols=5)
     table.style = "Table Grid"
-    _set_col_widths(table, [Inches(1.4), Inches(2.8), Inches(0.7), Inches(1.6)])
+    _set_col_widths(table, [Inches(1.2), Inches(2.5), Inches(0.6), Inches(1.4), Inches(0.8)])
 
-    for i, h in enumerate(["Clause", "Title", "Score", "Severity"]):
+    for i, h in enumerate(["Clause", "Title", "Score", "Severity", "Confidence"]):
         cell = table.rows[0].cells[i]
         cell.text = h
         p = cell.paragraphs[0]
@@ -618,6 +624,9 @@ def _add_clause_matrix(
             row.cells[3].text = "Set aside"
         else:
             row.cells[3].text = f"{'⚠ SPoF + ' if gap.is_spof else ''}{gap.severity}"
+        row.cells[4].text = (
+            f"{round(gap.confidence * 100)}%" if gap.confidence is not None else "—"
+        )
 
         color = C_GREY if set_aside else SEVERITY_COLOR.get(gap.severity, C_DARK)
         for cell in row.cells:
@@ -627,6 +636,10 @@ def _add_clause_matrix(
         row.cells[3].paragraphs[0].runs[0].font.color.rgb = color
         if gap.is_spof and not set_aside:
             row.cells[3].paragraphs[0].runs[0].font.bold = True
+        # Confidence bassa (< 0.7) in grigio: giudizio meno assertivo
+        if gap.confidence is not None and gap.confidence < 0.7:
+            row.cells[4].paragraphs[0].runs[0].font.color.rgb = C_GREY
+            row.cells[4].paragraphs[0].runs[0].font.italic = True
 
         if set_aside:
             bg = "F8FAFC"
