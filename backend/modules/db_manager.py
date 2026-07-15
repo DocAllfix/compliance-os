@@ -414,6 +414,33 @@ def save_analysis_corpus(analysis_id: str, documents: List[Dict]) -> int:
     return saved
 
 
+def delete_analysis(analysis_id: str) -> Dict:
+    """Manutenzione admin (2026-07-10) — cancella COMPLETAMENTE un'analisi:
+    righe figlie (nonconformities, compliance_chat, analysis_documents), la riga
+    padre in compliance_analyses e la cartella corpus su disco.
+
+    Operazione IRREVERSIBILE. Non tocca il DMS (le cartelle/documenti restano):
+    va gestito separatamente col soft-delete DMS. Ritorna i conteggi per tabella.
+    """
+    import shutil
+    conn = get_connection()
+    cursor = conn.cursor()
+    counts: Dict = {}
+    for tbl in ("nonconformities", "compliance_chat", "analysis_documents"):
+        cursor.execute(f"DELETE FROM {tbl} WHERE analysis_id = ?", (analysis_id,))
+        counts[tbl] = cursor.rowcount
+    cursor.execute("DELETE FROM compliance_analyses WHERE id = ?", (analysis_id,))
+    counts["compliance_analyses"] = cursor.rowcount
+    conn.commit()
+    conn.close()
+
+    folder = CORPUS_DIR / analysis_id
+    counts["corpus_removed"] = folder.exists()
+    if folder.exists():
+        shutil.rmtree(folder, ignore_errors=True)
+    return counts
+
+
 def load_analysis_corpus(analysis_id: str) -> List[Dict]:
     """Ricostruisce la lista Phase-1 {filename, content, [document_id, version]}
     dal corpus salvato. La provenance DMS (se presente) viene riportata così il
