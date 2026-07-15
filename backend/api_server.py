@@ -1365,54 +1365,6 @@ async def read_audit_log(
     return {"entries": rows, "total": total, "limit": limit, "offset": offset}
 
 
-# ── MANUTENZIONE TEMPORANEA (2026-07-10) — purge analisi di test ──────────────
-# Endpoint one-shot per ripulire le analisi di test prima della consegna,
-# tenendo solo quelle in `keep`. Admin-only + dry-run di default + keep-list
-# obbligatoria (rifiuta se vuota, per non cancellare tutto). DA RIMUOVERE dopo
-# l'uso. Operazione irreversibile: cancella righe figlie, riga padre e corpus.
-_PURGE_CONFIRM_TOKEN = "PURGE-CONFIRM-2026"
-
-
-@app.post("/api/admin/purge-analyses")
-async def purge_analyses(
-    keep: str = Query("", description="ID analisi da TENERE, separati da virgola"),
-    confirm: str = Query("", description="token di conferma; vuoto/errato = dry-run"),
-    user: Dict = Depends(_get_current_user),
-):
-    if str(user.get("role") or "").lower() != "admin":
-        raise HTTPException(status_code=403, detail="Restricted to administrators")
-
-    keep_ids = {k.strip() for k in keep.split(",") if k.strip()}
-    if not keep_ids:
-        raise HTTPException(
-            status_code=400,
-            detail="Rifiuto senza keep-list esplicita (cancellerebbe tutto).",
-        )
-
-    from modules.db_manager import get_connection, delete_analysis
-    conn = get_connection()
-    rows = conn.execute(
-        "SELECT id, company FROM compliance_analyses ORDER BY analysis_date DESC"
-    ).fetchall()
-    conn.close()
-    would_keep = [{"id": r["id"], "company": r["company"]} for r in rows if r["id"] in keep_ids]
-    to_delete = [{"id": r["id"], "company": r["company"]} for r in rows if r["id"] not in keep_ids]
-
-    if confirm != _PURGE_CONFIRM_TOKEN:
-        return {
-            "mode": "DRY_RUN",
-            "total": len(rows),
-            "would_keep": would_keep,
-            "would_delete": to_delete,
-            "hint": f"aggiungi &confirm={_PURGE_CONFIRM_TOKEN} per eseguire davvero",
-        }
-
-    details = {a["id"]: delete_analysis(a["id"]) for a in to_delete}
-    _audit(user, "analyses_purge", "compliance_analysis", None,
-           f"kept={[a['id'] for a in would_keep]} deleted={[a['id'] for a in to_delete]}")
-    return {"mode": "DELETED", "kept": would_keep, "deleted": to_delete, "details": details}
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 # MAIN
 # ══════════════════════════════════════════════════════════════════════════════
