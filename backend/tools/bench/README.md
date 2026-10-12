@@ -16,6 +16,8 @@ supera la variabilità misurata e se la precisione scende.
 | `findings.py` | Formato unico dei rilievi (da `result.json` o dall'export DOCX). |
 | `synthetic_pack.py` | Genera il pacco sintetico inglese (azienda UK inventata) con la sua chiave. |
 | `reapply_rules.py` | Riapplica fuori linea le regole di gravità e delle azioni a un'esecuzione salvata. |
+| `shared_debug.py` | Applica la rilettura tra norme (SHARED_EVIDENCE, Fase 3) a un'esecuzione salvata e scrive un nuovo `result.json` da misurare con `score.py`. |
+| `cross_norm.py` | Elenca le clausole comuni giudicate in modo opposto tra le norme in un'esecuzione salvata. |
 | `self_debug.py` | Riesegue solo le Fasi 4-5 su un'esecuzione salvata e mostra cosa è stato estratto (fogli classificati, dichiarazioni) e gli esiti: serve a iterare sui confronti senza rifare la pipeline. |
 
 Precisione delle Fasi 4-5: ogni contestazione "incoerente / registrazione mancante" viene

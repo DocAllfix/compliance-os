@@ -365,6 +365,21 @@ def analyze_compliance(
     risk_register_dict, risk_register_text = _risk_future.result()
     _risk_pool.shutdown(wait=False)
 
+    # ── Piano motore Fase 3 (SHARED_EVIDENCE) — un giudizio per un fatto condiviso ─
+    # Clausola comune conforme in una norma e non conforme in un'altra solo per lo
+    # screening: la seconda si rilegge per intero con i documenti della prima.
+    if features.on("SHARED_EVIDENCE") and docs_by_name and len(norm_reports) > 1:
+        _t0 = time.monotonic()
+        try:
+            from compliance import shared_evidence
+            norm_reports, _shared_log = shared_evidence.reconcile(
+                norm_reports, {n: effective_registry[n]["clauses"] for n in norms_to_analyse},
+                docs_by_name, cards_by_id, evidence_service, context_block,
+                lambda messages, max_tokens: _call_llm(messages, max_tokens=max_tokens, deep=True), emit)
+        except Exception as e:
+            _log.warning("Rilettura tra norme fallita (non bloccante): %s", e)
+        _log.info("[Timing] rilettura tra norme: %.1fs", time.monotonic() - _t0)
+
     # ── Piano motore Fase 4 (SELF_CONSISTENCY) — l'organizzazione contro sé stessa
     # Dichiarazioni (registri, procedure, verbali) → aspettative → confronti in
     # Python; gli esiti diventano controlli sulla clausola competente.
@@ -1015,6 +1030,11 @@ def _analyse_norm(
     # parziale in Stage B; qui si chiude la simmetria sulle clausole SENZA atomic
     # requirements (blob-scored da Stage A), che altrimenti restano MAJOR pur
     # avendo evidenza. Le assenze vere (nessuna citazione) restano MAJOR.
+    return finalise_gaps(all_gaps, clauses)
+
+
+def finalise_gaps(all_gaps: List[ClauseGap], clauses: Dict[str, Dict[str, Any]]) -> List[ClauseGap]:
+    """Calibrazioni finali di una norma (anche dopo la rilettura tra norme, cross_norm)."""
     all_gaps = [_calibrate_blob_severity(g) for g in all_gaps]
 
     # ── Fonti oneste sulle assenze (Hardening 2026, problema #6) ─────────────

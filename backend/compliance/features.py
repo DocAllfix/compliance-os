@@ -19,14 +19,19 @@ Fase 2 — prove, gravità e azioni (ENGINE_PHASE2=1):
   CONTRADICTION_STATUS    Stage B: stato CONTRADICTED con due citazioni verificate in Python
   ACTIONS_FROM_STATES     verbo dell'azione deciso dagli stati dei requisiti (compliance/action_rules.py)
   JURISDICTION_FILTER     obblighi nazionali solo per il paese giusto (compliance/jurisdiction.py)
-  (KB_V2_FILL             solo clausole senza requisiti: fuori dal gruppo, banco 12/10 = ENC 10-11 -> 7)
+  (KB_V2_FILL             solo clausole senza requisiti: fuori dal gruppo, banco 12/10 = ENC 10-11 -> 7;
+                          rimisurata con le fasi 1-5: NC 20-22 -> 35, conformi 41% -> 29%)
   (KB_V2                  KB v2 completa: fuori dal gruppo, banco 12/10 = perde i difetti puntuali)
   (KB_STRENGTH            KB attuale, ma le buone pratiche non valgono da obbligo: al massimo osservazione;
-                          fuori dal gruppo finché la classificazione non è rivista a mano)
+                          classificazione rivista il 12/10 (23 buone pratiche su 62, tools/kb/review_good_practice.py);
+                          banco Box: -1/3 NC senza perdere ENC, pacchi italiani invariati; fuori dal gruppo
+                          finché l'utente non conferma la revisione)
 
 Fase 3 — modello dei fatti (ENGINE_PHASE3=1):
   FACT_MODEL              chi ha emesso ogni documento, dominio, codice, persone, righe dei registri
                           (compliance/facts.py): ruoli chiave solo del cliente, etichette per Stage A/B
+  SHARED_EVIDENCE         clausola comune con giudizi opposti tra le norme: quella giudicata sui soli estratti
+                          si rilegge per intero con i documenti dell'altra (compliance/shared_evidence.py)
 
 Fase 4 — l'organizzazione contro sé stessa (ENGINE_PHASE4=1):
   SELF_CONSISTENCY        dichiarazioni (registri, procedure, verbali) → aspettative → confronti in Python
@@ -45,7 +50,7 @@ _GROUPS = {
                       "RETRIEVE_PER_REQUIREMENT"),
     "ENGINE_PHASE2": ("SEVERITY_RULES", "ABSENCE_SEARCH", "CONTRADICTION_STATUS", "ACTIONS_FROM_STATES",
                       "JURISDICTION_FILTER"),
-    "ENGINE_PHASE3": ("FACT_MODEL",),
+    "ENGINE_PHASE3": ("FACT_MODEL", "SHARED_EVIDENCE"),
     "ENGINE_PHASE4": ("SELF_CONSISTENCY",),
     "ENGINE_PHASE5": ("SECTOR_EXPECTATIONS",),
 }

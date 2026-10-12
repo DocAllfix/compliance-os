@@ -42,6 +42,18 @@ def _first_sentence(text: str, limit: int = 220) -> str:
     return s[:limit].rstrip()
 
 
+def _open_point(gap: ClauseGap) -> str:
+    """Il punto aperto del rilievo, non la sua parte positiva: le note dei requisiti
+    non soddisfatti, altrimenti la frase dopo "However", altrimenti la prima frase."""
+    notes = [c.note for c in gap.requirement_checks if c.status in ("PARTIAL", "ABSENT") and c.note]
+    if notes:
+        return notes[0][:220]
+    m = re.search(r"\b(?:However|But|Although)\b,?\s+(.+?)(?:\.\s|\.$|$)", gap.finding or "", re.S)
+    if m:
+        return (m.group(1).strip()[0].upper() + m.group(1).strip()[1:])[:220]
+    return _first_sentence(gap.finding)
+
+
 def _note(gap: ClauseGap, text: str) -> None:
     gap.hedged = True
     gap.hedge_note = f"{gap.hedge_note} {text}".strip() if gap.hedge_note else text
@@ -84,7 +96,7 @@ def apply(gap: ClauseGap, clause: Dict[str, Any]) -> ClauseGap:
     # ── Nessuna prova per requisito: screening o requisiti inventati ─────────
     if not ((gap.deep_verified and norm_checks) or self_checks):
         if gap.severity in ("MAJOR", "MINOR"):
-            item = _first_sentence(gap.finding) or gap.clause_title
+            item = _open_point(gap) or gap.clause_title
             gap.to_verify = gap.to_verify or [item]
             gap.severity = "OBSERVATION"
             gap.score = max(BANDS["OBSERVATION"][0], min(BANDS["OBSERVATION"][1], gap.score or 65))

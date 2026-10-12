@@ -197,32 +197,10 @@ def run_deep_verification(
                 pass
 
     try:
-        prompt_template = _PROMPT_PATH.read_text(encoding="utf-8")
+        system_prompt, doc_tags, fname_to_eid = prepare_stage_b(context_block, cards_by_id, docs_by_name)
     except Exception as e:
         _log.warning("[Deep] prompt missing (%s) — skipping Stage B", e)
         return gaps
-
-    system_prompt = prompt_template.replace("{company_context}", context_block)
-    from compliance import features
-    if features.on("CONTRADICTION_STATUS"):
-        system_prompt += _CONTRADICTION_ADDENDUM
-    # Piano motore Fase 3 (FACT_MODEL): chi ha emesso ogni documento letto.
-    doc_tags: Dict[str, str] = {}
-    if features.on("FACT_MODEL"):
-        from compliance.facts import EVIDENCE_PROVENANCE_RULE, build as _build_facts
-        system_prompt += EVIDENCE_PROVENANCE_RULE
-        _facts = _build_facts(list(cards_by_id.values()))
-        doc_tags = {k: _facts.tag(k) for k in docs_by_name if _facts.tag(k)}
-
-    # Map evidence_id → file name and build the file-name lookup used to
-    # resolve citations back to evidence ids.
-    eid_to_fname: Dict[str, str] = {
-        eid: str(card.get("file_name", "") or "")
-        for eid, card in cards_by_id.items()
-    }
-    fname_to_eid: Dict[str, str] = {
-        _norm_name(fn): eid for eid, fn in eid_to_fname.items() if fn
-    }
 
     targets = [
         (i, gap) for i, gap in enumerate(gaps)
@@ -267,6 +245,29 @@ def run_deep_verification(
             f.result()
 
     return gaps
+
+
+def prepare_stage_b(context_block: str, cards_by_id: Dict[str, Dict[str, Any]],
+                    docs_by_name: Dict[str, str]):
+    """Prompt di sistema dello Stage B, etichette di provenienza dei documenti e mappa
+    file → evidence_id. Condivisa dallo Stage B e dalla rilettura tra norme (cross_norm)."""
+    system_prompt = _PROMPT_PATH.read_text(encoding="utf-8").replace("{company_context}", context_block)
+    from compliance import features
+    if features.on("CONTRADICTION_STATUS"):
+        system_prompt += _CONTRADICTION_ADDENDUM
+    # Piano motore Fase 3 (FACT_MODEL): chi ha emesso ogni documento letto.
+    doc_tags: Dict[str, str] = {}
+    if features.on("FACT_MODEL"):
+        from compliance.facts import EVIDENCE_PROVENANCE_RULE, build as _build_facts
+        system_prompt += EVIDENCE_PROVENANCE_RULE
+        _facts = _build_facts(list(cards_by_id.values()))
+        doc_tags = {k: _facts.tag(k) for k in docs_by_name if _facts.tag(k)}
+    # evidence_id → file name, per ricondurre le citazioni agli id.
+    fname_to_eid: Dict[str, str] = {
+        _norm_name(str(card.get("file_name", "") or "")): eid
+        for eid, card in cards_by_id.items() if card.get("file_name")
+    }
+    return system_prompt, doc_tags, fname_to_eid
 
 
 # ── Single-clause verification ────────────────────────────────────────────────

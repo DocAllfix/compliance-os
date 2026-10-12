@@ -135,3 +135,13 @@ def test_strength_only_marks_good_practice(monkeypatch):
     assert R.apply(gap(), clauses["9001_10_2"]).severity == "MINOR"
     g = R.apply(gap(), marked["9001_10_2"])
     assert g.severity == "CONFORMANT" and "opportunity for improvement" in g.hedge_note
+
+
+def test_point_to_verify_is_the_open_point_not_the_praise():
+    # banco 12/10: "Organisational roles are clearly described" finiva tra i punti da verificare
+    g = ClauseGap(clause_id="9001_5_3", clause_title="5.3 Roles", score=50, severity="MINOR", is_spof=False,
+                  finding="Roles and reporting lines are clearly described in the manual. However, job descriptions "
+                          "are referenced but not included.", sources=[],
+                  remediation=RemediationPlan(what="x", who="y", when="z", effort="LOW"))
+    out = R.apply(g, {"id": "9001_5_3"})
+    assert out.severity == "OBSERVATION" and out.to_verify == ["Job descriptions are referenced but not included"]
