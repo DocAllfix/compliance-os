@@ -83,6 +83,11 @@ GAP_RETRIEVAL_FALLBACK_CAP = 20
 # taggate alla clausola (Phase 2 `iso_clause_primary`) col retrieval semantico.
 # Tiene il prompt limitato anche per clausole con molte card pertinenti.
 GAP_RETRIEVAL_TAG_CAP = 12
+# Piano motore Fase 1 (RETRIEVE_PER_REQUIREMENT): frammenti per query di
+# requisito e tetto complessivo per clausola (batch da 10 clausole × 16 × 700
+# caratteri ≈ 28k token, dentro i limiti della mini).
+GAP_RETRIEVAL_PER_REQ_K = 2
+GAP_RETRIEVAL_PER_REQ_CAP = 16
 
 # Severity ordering used by the floor application
 _SEVERITY_ORDER = {
@@ -208,6 +213,33 @@ def analyze_compliance(
         else:
             _log.warning("Norm/set %r sconosciuto — ignorato", requested)
 
+    # ── Piano motore Fase 2 (JURISDICTION_FILTER) — obblighi nazionali solo per
+    # il paese giusto: per un'organizzazione non italiana la knowledge base
+    # perde i requisiti solo italiani (DUVRI, FIR) e i nomi degli istituti
+    # italiani diventano l'equivalente neutro (compliance/jurisdiction.py).
+    from compliance import features
+    # Piano motore Fase 2 (KB_V2): requisiti atomici da norma + checklist.
+    if features.on("KB_V2") or features.on("KB_V2_FILL"):
+        from compliance import kb_v2
+        fill_only = not features.on("KB_V2")
+        for _norm in list(effective_registry):
+            if _norm in _NORM_REGISTRY:
+                _cfg = effective_registry[_norm]
+                effective_registry[_norm] = {**_cfg, "clauses": kb_v2.apply(_cfg["clauses"], fill_only=fill_only)}
+    elif features.on("KB_STRENGTH"):
+        # Solo la forza dei requisiti: buona pratica ≠ obbligo (la KB resta quella attuale).
+        from compliance import kb_v2
+        for _norm in list(effective_registry):
+            if _norm in _NORM_REGISTRY:
+                _cfg = effective_registry[_norm]
+                effective_registry[_norm] = {**_cfg, "clauses": kb_v2.annotate(_cfg["clauses"])}
+    if features.on("JURISDICTION_FILTER"):
+        from compliance import jurisdiction
+        country = getattr(company_context, "country", None)
+        for _norm, _cfg in list(effective_registry.items()):
+            effective_registry[_norm] = {**_cfg, "country": country,
+                                         "clauses": jurisdiction.adapt_clauses(_cfg["clauses"], country)}
+
     # ── Phase 2.6 — documented-information coverage check (Sprint R3) ─────────
     # Registry of what the standards oblige to exist, matched in cascade:
     # metadata (L1) → semantic (L2) → LLM absence confirmation (L3).
@@ -242,6 +274,12 @@ def analyze_compliance(
     # batch-format prompt (gap_analysis_batch.md) so the model returns
     # `{"clauses": [...]}` instead of a single-clause JSON object.
     base_prompt   = _load_prompt(_BATCH_GAP_PROMPT, context_block)
+    from compliance import features
+    if features.on("SEVERITY_RULES"):
+        base_prompt = _absence_wording_rules(base_prompt)
+    if features.on("FACT_MODEL"):
+        from compliance.facts import EVIDENCE_PROVENANCE_RULE
+        base_prompt += EVIDENCE_PROVENANCE_RULE
 
     # Sprint R4 — full document texts keyed by normalised file name, used by
     # the Stage B deep verification pass to read whole documents.
@@ -327,6 +365,48 @@ def analyze_compliance(
     risk_register_dict, risk_register_text = _risk_future.result()
     _risk_pool.shutdown(wait=False)
 
+    # ── Piano motore Fase 4 (SELF_CONSISTENCY) — l'organizzazione contro sé stessa
+    # Dichiarazioni (registri, procedure, verbali) → aspettative → confronti in
+    # Python; gli esiti diventano controlli sulla clausola competente.
+    self_checks: List[Dict[str, Any]] = []
+    if features.on("SELF_CONSISTENCY") and documents:
+        _t0 = time.monotonic()
+        try:
+            from compliance import self_consistency
+            from compliance.absence_search import search_statement
+            from compliance.facts import build as _build_facts
+            emit(86.0, "Checking the organisation against its own records…")
+            _facts = _build_facts(cards, documents)
+            _deep = lambda messages, max_tokens: _call_llm(messages, max_tokens=max_tokens, deep=True)  # noqa: E731
+            self_checks = self_consistency.run(
+                documents, _facts, datetime.now().date(),
+                lambda subject, quote, src: search_statement(subject, quote, src, docs_by_name,
+                                                             evidence_service, _deep))
+            norm_reports = self_consistency.attach(
+                norm_reports, self_checks,
+                {n: effective_registry[n]["clauses"] for n in norms_to_analyse})
+        except Exception as e:
+            _log.warning("Fase 4 self-consistency fallita (non bloccante): %s", e)
+        _log.info("[Timing] fase 4 self-consistency: %.1fs (%d esiti)", time.monotonic() - _t0, len(self_checks))
+
+    # ── Piano motore Fase 5 (SECTOR_EXPECTATIONS) — aspettative di settore ───
+    # L'attività citata nei documenti del cliente fa attendere la registrazione
+    # tipica (schede di sicurezza, documenti rifiuti, verifiche periodiche);
+    # se manca è un punto da verificare, mai una non conformità.
+    if features.on("SECTOR_EXPECTATIONS") and documents:
+        try:
+            from compliance import sector_expectations
+            from compliance.facts import build as _build_facts
+            _f5 = _build_facts(cards)
+            _se = sector_expectations.evaluate(documents, _f5.is_external)
+            norm_reports, _se_checks = sector_expectations.attach(
+                norm_reports, _se, {n: effective_registry[n]["clauses"] for n in norms_to_analyse})
+            norm_reports = [_build_norm_report(r.norm, r.clauses, effective_registry[r.norm]["clauses"])
+                            for r in norm_reports]
+            self_checks = self_checks + _se_checks
+        except Exception as e:
+            _log.warning("Fase 5 aspettative di settore fallita (non bloccante): %s", e)
+
     # ── Phase 3.5 — cross-clause coherence (Sprint R5, PRD 1.4.2c / P6) ───────
     cross_clause_findings: List[Any] = []
     _t0 = time.monotonic()
@@ -373,6 +453,8 @@ def analyze_compliance(
 
     # Attach the Phase 3.5 cross-clause findings (Sprint R5)
     result.cross_clause_findings = cross_clause_findings
+    # Piano motore Fase 4: esiti "l'organizzazione contro sé stessa"
+    result.self_checks = self_checks
 
     # Attach the Phase 2.7 structured risk register (Sprint R8, P2)
     if risk_register_dict is not None:
@@ -422,7 +504,7 @@ def _analyse_norms_parallel(
     if len(norms) == 1:
         norm = norms[0]
         norm_cfg = registry[norm]
-        norm_prompt = base_prompt + "\n\n" + _load_file(norm_cfg["prompt_path"])
+        norm_prompt = base_prompt + "\n\n" + _norm_prompt_text(norm_cfg)
         gaps = _analyse_norm(
             norm=norm,
             clauses=norm_cfg["clauses"],
@@ -446,7 +528,7 @@ def _analyse_norms_parallel(
 
     def analyse_one(norm_idx: int, norm: str) -> None:
         norm_cfg    = registry[norm]
-        norm_prompt = base_prompt + "\n\n" + _load_file(norm_cfg["prompt_path"])
+        norm_prompt = base_prompt + "\n\n" + _norm_prompt_text(norm_cfg)
         emit(15.0 + norm_idx * pct_per_norm, f"Analysing {norm}…")
         gaps = _analyse_norm(
             norm=norm,
@@ -602,6 +684,29 @@ def _retrieve_with_fallback(
     # Sprint R2 — over-fetch e diversify: max 2 chunk per evidence_id.
     raw_results = evidence_service.get_evidences_for_clause(clause, n=top_k * 2)
     semantic = _diversify_chunks(raw_results, max_per_doc=2, cap=top_k)
+    base_cap, tag_cap = top_k, GAP_RETRIEVAL_TAG_CAP
+
+    # Piano motore Fase 1 (RETRIEVE_PER_REQUIREMENT) — una query per requisito
+    # atomico (testo + indizio di verifica), oltre a quella per clausola: la query
+    # unica titolo+parole chiave pescava 4-8 frammenti per clausole con fino a 15
+    # requisiti, e i requisiti non "coperti" dalla query finivano ABSENT.
+    from compliance import features
+    reqs = clause.get("atomic_requirements") or []
+    if reqs and features.on("RETRIEVE_PER_REQUIREMENT"):
+        extra: List[Dict[str, Any]] = []
+        for req in reqs:
+            q = " ".join(x for x in (req.get("text"), req.get("verification_hint")) if x)
+            extra.extend(evidence_service.get_evidences_similar_to(q, n=GAP_RETRIEVAL_PER_REQ_K))
+        seen_chunks = {(str(r.get("evidence_id", "")), (r.get("excerpt") or "")[:120]) for r in semantic}
+        fresh = []
+        for r in sorted(extra, key=lambda r: r.get("distance", 9.0)):
+            k = (str(r.get("evidence_id", "")), (r.get("excerpt") or "")[:120])
+            if k not in seen_chunks:
+                seen_chunks.add(k)
+                fresh.append(r)
+        base_cap = min(top_k + len(reqs), GAP_RETRIEVAL_PER_REQ_CAP)
+        tag_cap = max(tag_cap, base_cap)
+        semantic = _diversify_chunks(semantic + fresh, max_per_doc=3, cap=base_cap)
 
     # Fix 2026-06-14 — fusione con le card taggate alla clausola (prima, perché
     # garantite pertinenti), poi il semantico non già incluso (dedup evidence_id).
@@ -610,7 +715,7 @@ def _retrieve_with_fallback(
         tag_entries = [_card_to_evidence(c) for c in tagged_cards if c.get("evidence_id")]
         seen = {e["evidence_id"] for e in tag_entries}
         merged = tag_entries + [r for r in semantic if str(r.get("evidence_id", "")) not in seen]
-        cap = min(max(top_k, len(tag_entries) + 2), GAP_RETRIEVAL_TAG_CAP)
+        cap = min(max(base_cap, len(tag_entries) + 2), tag_cap)
         results = _diversify_chunks(merged, max_per_doc=2, cap=cap)
     else:
         results = semantic
@@ -632,6 +737,34 @@ def _retrieve_with_fallback(
             )
 
     return results
+
+
+# Piano motore Fase 2 (SEVERITY_RULES) — il prompt dello Stage A diceva al
+# modello "nessuna evidenza → MAJOR, scrivi che non è stata identificata
+# documentazione": il testo arrivava al cliente come accusa anche quando le
+# regole ne limitano la gravità. Lo screening vede pochi frammenti per clausola:
+# ciò che non trova va descritto come non trovato nell'evidenza esaminata.
+_ABSENCE_RULE_SWAPS = (
+    ("1. **Requirement not implemented at all** (no process, no document, no evidence whatsoever in "
+     "`available_evidences`) → MAJOR.",
+     "1. **Nothing relevant in `available_evidences`** → OBSERVATION. You see only a few retrieved "
+     "excerpts, not the whole pack: write that the evidence was not found in the excerpts reviewed and "
+     "should be verified. Never state that the organisation has no document, process or record."),
+    ("- **Evidence completely absent for a clause** (`available_evidences: []`): score 15, severity MAJOR "
+     "(or OBSERVATION if the clause is purely contextual — §4.x), state that no documentation was identified.",
+     "- **Evidence completely absent for a clause** (`available_evidences: []`): score 65, severity "
+     "OBSERVATION; write that no evidence was found in the excerpts reviewed and that it should be "
+     "verified — never that the organisation lacks it."),
+)
+
+
+def _absence_wording_rules(prompt: str) -> str:
+    for old, new in _ABSENCE_RULE_SWAPS:
+        if old in prompt:
+            prompt = prompt.replace(old, new)
+        else:
+            _log.warning("[SEVERITY_RULES] regola del prompt non trovata, non sostituita: %s", old[:60])
+    return prompt
 
 
 def _calibrate_blob_severity(gap: ClauseGap) -> ClauseGap:
@@ -698,6 +831,12 @@ def _confine_peripheral_clause(
         _hedge_gap(gap, "Peripheral clause without a curated checklist: capped below "
                         "major (major findings are reserved for core QMS clauses).")
     elif gap.severity == "CONFORMANT":
+        # Piano motore Fase 2 (SEVERITY_RULES): una conformità con citazioni valide
+        # (cite-or-fail) resta conformità; declassarla d'ufficio era eccesso di
+        # severità, e lasciava sull'osservazione l'azione "istituisci" del template.
+        from compliance import features
+        if features.on("SEVERITY_RULES") and gap.sources:
+            return gap
         gap.severity = "OBSERVATION"
         gap.score = max(60, min(84, gap.score or 75))
         _hedge_gap(gap, "Full conformity is asserted only for core QMS clauses with a "
@@ -888,6 +1027,18 @@ def _analyse_norm(
     # estremi: i verdetti forti sono riservati alla spina dorsale curata.
     all_gaps = [_confine_peripheral_clause(g, clauses) for g in all_gaps]
 
+    # ── Piano motore Fase 2 (SEVERITY_RULES) — la gravità la decide Python ───
+    # Per ultime, sopra ogni calibrazione: nessuna NC senza prova per requisito;
+    # le assenze non verificate diventano punti "da verificare".
+    from compliance import features
+    if features.on("SEVERITY_RULES"):
+        from compliance import severity_rules
+        all_gaps = severity_rules.apply_all(all_gaps, clauses)
+    # ── Fase 2 (ACTIONS_FROM_STATES) — il verbo dell'azione dagli stati ──────
+    if features.on("ACTIONS_FROM_STATES"):
+        from compliance import action_rules
+        all_gaps = action_rules.apply_all(all_gaps, clauses)
+
     return all_gaps
 
 
@@ -1013,7 +1164,14 @@ def _build_batch_user_prompt(
         # LLM absence confirmation) found these REQUIRED items missing from
         # the corpus — strong, pre-verified evidence of absence.
         di_absent = absent_by_clause.get(clause["id"], [])
-        if di_absent:
+        from compliance import features as _features
+        if di_absent and _features.on("SEVERITY_RULES"):
+            # Piano motore Fase 2: la 2.6 non cerca nel testo completo (e su un
+            # errore del modello segna tutto assente): non è una prova.
+            parts.append("- documented_info_check (NOT confirmed — matched on card metadata only; the item "
+                         "may exist under another name or inside another document): these items were not "
+                         "matched:")
+        elif di_absent:
             parts.append("- documented_info_check (deterministic, pre-verified): "
                          "the following REQUIRED documented information was NOT found "
                          "anywhere in the document package:")
@@ -1037,6 +1195,13 @@ def _build_batch_user_prompt(
                 parts.append(f"      evidence_id: {ev.get('evidence_id', '')}")
                 parts.append(f"      file_name: {ev.get('file_name', '')}")
                 parts.append(f"      doc_type: {ev.get('doc_type', '')}")
+                # Piano motore Fase 3: un documento di un fornitore o di un ente non
+                # prova il sistema del cliente (scope, politica, ruoli, registri).
+                if ev.get("issuer"):
+                    who = ev["issuer"] + (f" ({ev['issuer_name']})" if ev.get("issuer_name") else "")
+                    parts.append(f"      issued_by: {who}")
+                if ev.get("domain"):
+                    parts.append(f"      domain: {ev['domain']}")
                 parts.append(f"      iso_clause_primary: {ev.get('iso_clause_primary', '')}")
                 parts.append(f"      gap_signal: {ev.get('gap_signal', False)}")
                 # Sprint R2: chunks carry real page numbers from Phase 1 markers
@@ -1515,6 +1680,16 @@ def _strip_code_fences(text: str) -> str:
 
 
 # ── File helpers ──────────────────────────────────────────────────────────────
+
+def _norm_prompt_text(norm_cfg: Dict[str, Any]) -> str:
+    """Prompt della norma; con JURISDICTION_FILTER adattato al paese (la chiave
+    "country" esiste nel registry solo con l'interruttore acceso)."""
+    text = _load_file(norm_cfg["prompt_path"])
+    if "country" in norm_cfg:
+        from compliance.jurisdiction import adapt_prompt
+        text = adapt_prompt(text, norm_cfg.get("country"))
+    return text
+
 
 def _load_file(path: Path) -> str:
     try:

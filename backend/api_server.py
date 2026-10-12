@@ -235,6 +235,7 @@ async def compliance_analyze(
     certified: str = Form(...),
     sites_count: str = Form(...),
     norms: str = Form(...),          # JSON array serializzato, es. '["ISO 9001","ISO 14001"]'
+    country: Optional[str] = Form(None),   # Piano motore Fase 2: obblighi nazionali per paese
     user: Dict = Depends(_get_current_user),
 ):
     """
@@ -267,6 +268,7 @@ async def compliance_analyze(
         certified=certified,
         sites_count=sites_count,
         norms=norms_list,
+        country=(country or "").strip() or None,
     )
 
     def _to_dms(result, outcome) -> None:
@@ -296,6 +298,7 @@ class AnalyzeDmsRequest(BaseModel):
     certified: str
     sites_count: str
     norms: List[str]
+    country: Optional[str] = None      # Piano motore Fase 2: obblighi nazionali per paese
     scope: str = "all"                 # all | folder | updated_since
     folder_id: Optional[int] = None
     updated_since: Optional[str] = None  # YYYY-MM-DD
@@ -332,6 +335,7 @@ async def compliance_analyze_dms(
         company_name=body.company_name, sector=body.sector,
         employee_range=body.employee_range, certified=body.certified,
         sites_count=body.sites_count, norms=body.norms,
+        country=(body.country or "").strip() or None,
     )
 
     # filename → (document_id, version) per il backfill post-analisi

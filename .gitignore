@@ -97,6 +97,9 @@ design-system/
 # --- DMS binary store (dati runtime, mai nel repo) ---
 backend/data/dms/
 
+# --- Cache delle schede di evidenza (contengono estratti dei documenti cliente) ---
+backend/data/card_cache/
+
 # --- Documenti business / draft interni (restano locali, fuori dal repo) ---
 /*Cost-Profile*.md
 /*Brochure*.md

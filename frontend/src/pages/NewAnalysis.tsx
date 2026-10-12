@@ -32,6 +32,14 @@ const SITES_OPTIONS = [
   { value: '5+', label: '5+' },
 ];
 
+// Decides which national legal obligations apply (e.g. Italian RSPP/DUVRI only for Italy).
+const COUNTRY_OPTIONS = [
+  { value: '', label: 'Not stated' },
+  { value: 'United Kingdom', label: 'United Kingdom' },
+  { value: 'Ireland', label: 'Ireland' },
+  { value: 'Italy', label: 'Italy' },
+];
+
 function labelFor(options: { value: string; label: string }[], value: string): string {
   return options.find((o) => o.value === value)?.label ?? value;
 }
@@ -44,6 +52,7 @@ interface FormState {
   employee_range: string;
   certified: string;
   sites_count: string;
+  country: string;
   norms: string[];
 }
 
@@ -58,6 +67,7 @@ const DEFAULT_FORM: FormState = {
   employee_range: '11-50',
   certified: 'no',
   sites_count: '1',
+  country: '',
   norms: [],
 };
 
@@ -143,6 +153,14 @@ function Step1Context({ form, setForm, onNext }: { form: FormState; setForm: (f:
           <select className="select" value={form.sites_count} onChange={(e) => update('sites_count', e.target.value)}>
             {SITES_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
+        </div>
+
+        <div className="field">
+          <label className="field-label">Country of operation</label>
+          <select className="select" value={form.country} onChange={(e) => update('country', e.target.value)}>
+            {COUNTRY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+          <span className="field-help">National legal requirements are applied only for this country.</span>
         </div>
 
         <div className="field full">
@@ -381,6 +399,8 @@ function Step3Review({ form, source, file, dmsFolderName, dmsCount, onBack, onSt
         <span>{labelFor(CERTIFIED_OPTIONS, form.certified)}</span>
         <span style={{ color: 'var(--text-tertiary)' }}>Sites</span>
         <span>{labelFor(SITES_OPTIONS, form.sites_count)}</span>
+        <span style={{ color: 'var(--text-tertiary)' }}>Country</span>
+        <span>{labelFor(COUNTRY_OPTIONS, form.country)}</span>
         <span style={{ color: 'var(--text-tertiary)' }}>Standards</span>
         <span>{form.norms.join(' · ')}</span>
         <span style={{ color: 'var(--text-tertiary)' }}>Documents</span>
@@ -537,6 +557,7 @@ export function NewAnalysis() {
       certified: form.certified,
       sites_count: form.sites_count,
       norms: form.norms,
+      ...(form.country ? { country: form.country } : {}),
     };
 
     try {

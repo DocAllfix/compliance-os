@@ -38,10 +38,18 @@ def build_context_prompt_block(ctx: CompanyContext) -> str:
 
     norms_str = ", ".join(ctx.norms) if ctx.norms else "no specific standards selected"
 
+    # Piano motore Fase 2 (JURISDICTION_FILTER): il paese decide gli obblighi nazionali.
+    from compliance import features
+    country_str = ""
+    if features.on("JURISDICTION_FILTER"):
+        from compliance.jurisdiction import context_line
+        country_str = "\n" + context_line(getattr(ctx, "country", None))
+
     return (
         f"Company context: {ctx.company_name} operates in {ctx.sector} "
         f"with {employee_range} employees. "
         f"Currently {certified_str} against ISO standards. "
         f"Operating across {sites_str}.\n"
         f"Standards under assessment: {norms_str}."
+        f"{country_str}"
     )

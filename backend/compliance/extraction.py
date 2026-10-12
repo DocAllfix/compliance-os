@@ -22,7 +22,7 @@ import threading
 import unicodedata
 import zipfile
 from pathlib import Path
-from typing import Callable, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
 _log = logging.getLogger("compliance.extraction")
 
@@ -335,6 +335,89 @@ def _extract_pdf_text(raw: bytes, filename: str) -> str:
     return text
 
 
+# ── Piano motore Fase 1 — fogli di calcolo senza perdite (READ_SHEET_CELLS) ──
+# Il rendering storico scartava le celle vuote: le colonne "scivolavano" (il
+# valore della colonna 5 finiva sotto l'intestazione della 4) e una colonna
+# obbligatoria vuota — es. il formatore non indicato — spariva senza traccia.
+# Qui ogni riga dati porta i valori con la propria intestazione e le celle
+# vuote restano visibili come "(blank)". Fogli enormi: formato compatto a
+# colonne fisse, sempre con le celle vuote.
+
+_SHEET_LABELLED_MAX_ROWS = 400
+_SHEET_LABELLED_MAX_COLS = 40
+
+
+def _cell_str(v: Any) -> str:
+    import datetime as _dt
+    if v is None:
+        return ""
+    if isinstance(v, _dt.datetime):
+        return v.date().isoformat() if (v.hour, v.minute, v.second) == (0, 0, 0) else v.isoformat(sep=" ")
+    if isinstance(v, _dt.date):
+        return v.isoformat()
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    return str(v).strip()
+
+
+def _is_header_row(cells: List[str], raw: List[Any]) -> bool:
+    filled = [(c, r) for c, r in zip(cells, raw) if c]
+    if len(filled) < 2:
+        return False
+    import datetime as _dt
+    return all(isinstance(r, str) and not isinstance(r, (_dt.date, _dt.datetime)) for _, r in filled)
+
+
+def render_sheet_rows(raw_rows: List[List[Any]]) -> List[str]:
+    """Rende le righe di un foglio con intestazioni e celle vuote esplicite."""
+    rows = [[_cell_str(v) for v in r] for r in raw_rows]
+    width = max((max((i for i, c in enumerate(r) if c), default=-1) for r in rows), default=-1) + 1
+    if width <= 0:
+        return []
+    rows = [(r + [""] * width)[:width] for r in rows]
+    raws = [(list(r) + [None] * width)[:width] for r in raw_rows]
+
+    hi = next((i for i, (r, rr) in enumerate(zip(rows, raws)) if _is_header_row(r, rr)), None)
+    if hi is None:
+        return [" | ".join(r).rstrip(" |") for r in rows if any(r)]
+    header = rows[hi]
+    data_start = hi + 1
+    # Intestazione su due righe (gruppi uniti sopra, sotto-colonne sotto): la
+    # prima riga ha buchi dove la seconda ha nomi → nomi composti "Gruppo Sotto".
+    # Indizio di gruppo: sotto-nomi ripetuti ("Data", "Scadenza" per ogni corso)
+    # o prima colonna vuota nella riga dei gruppi; evita di fondere una riga dati.
+    if data_start < len(rows) and _is_header_row(rows[data_start], raws[data_start]):
+        sub = rows[data_start]
+        gaps = [j for j in range(width) if not header[j] and sub[j]]
+        sub_filled = [c for c in sub if c]
+        grouped = len(set(sub_filled)) < len(sub_filled) or not header[0]
+        if gaps and grouped and sum(1 for c in header if c) < len(sub_filled):
+            group, names = "", []
+            for j in range(width):
+                if header[j]:
+                    group = header[j]
+                names.append(f"{group} {sub[j]}".strip() if sub[j] else header[j])
+            header = names
+            data_start += 1
+    names = [h or f"Column {j + 1}" for j, h in enumerate(header)]
+
+    out = [" | ".join(r).rstrip(" |") for r in rows[:hi] if any(r)]   # titoli sopra la tabella
+    data = [(i, r) for i, r in enumerate(rows[data_start:], start=data_start + 1) if any(r)]
+    if len(data) > _SHEET_LABELLED_MAX_ROWS or width > _SHEET_LABELLED_MAX_COLS:
+        out.append("Columns: " + " | ".join(names))
+        out += [" | ".join(c or "(blank)" for c in r) for _, r in data]
+        return out
+    out.append("Columns: " + " | ".join(names))
+    for rownum, r in data:
+        filled = [j for j, c in enumerate(r) if c]
+        if len(filled) == 1 and filled[0] == 0 and width > 2:
+            out.append(r[0])                        # riga-titolo di sezione
+            continue
+        cells = [f"{names[j]}: {r[j] or '(blank)'}" for j in range(width) if header[j] or r[j]]
+        out.append(f"Row {rownum}: " + " | ".join(cells))
+    return out
+
+
 def _extract_spreadsheet_text(raw: bytes, ext: str) -> str:
     """
     Sprint R1 — spreadsheet extraction (P7: objectives often live in Excel).
@@ -344,6 +427,10 @@ def _extract_spreadsheet_text(raw: bytes, ext: str) -> str:
     registers) regardless of how the file is named.
     """
     import io
+    from compliance import features
+
+    if features.on("READ_SHEET_CELLS"):
+        return _extract_spreadsheet_labelled(raw, ext)
 
     if ext in (".xlsx", ".xlsm"):
         try:
@@ -391,6 +478,45 @@ def _extract_spreadsheet_text(raw: bytes, ext: str) -> str:
         return ""
 
 
+def _extract_spreadsheet_labelled(raw: bytes, ext: str) -> str:
+    """Variante READ_SHEET_CELLS: stessi marcatori [SHEET], righe con intestazioni."""
+    import io
+    sheets: List[tuple] = []
+    try:
+        if ext in (".xlsx", ".xlsm"):
+            import openpyxl  # type: ignore
+            wb = openpyxl.load_workbook(io.BytesIO(raw), data_only=True, read_only=True)
+            for ws in wb.worksheets:
+                sheets.append((ws.title, [list(r) for r in ws.iter_rows(values_only=True)]))
+            wb.close()
+        else:
+            import xlrd  # type: ignore
+            wb = xlrd.open_workbook(file_contents=raw)
+            for ws in wb.sheets():
+                rows = []
+                for rx in range(ws.nrows):
+                    row = []
+                    for c in ws.row(rx):
+                        if c.ctype == xlrd.XL_CELL_DATE:
+                            try:
+                                row.append(xlrd.xldate_as_datetime(c.value, wb.datemode))
+                                continue
+                            except Exception:
+                                pass
+                        row.append(c.value if c.value != "" else None)
+                    rows.append(row)
+                sheets.append((ws.name, rows))
+    except Exception as e:
+        _log.warning("[Phase 1] spreadsheet extraction failed (%s): %s", ext, e)
+        return ""
+    parts = []
+    for title, rows in sheets:
+        lines = render_sheet_rows(rows)
+        if lines:
+            parts.append(f'[SHEET "{title}"]\n' + "\n".join(lines))
+    return "\n\n".join(parts)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Coverage estesa (Fase A) — handler bytes-based. Mirroring AUDITORSEMI
 # webapp/v2/text_handlers.py (sola lettura), adattati da path a bytes. Ogni
@@ -398,8 +524,131 @@ def _extract_spreadsheet_text(raw: bytes, ext: str) -> str:
 # corrotto) ritorna "" e il documento risulta semplicemente "senza testo".
 # ──────────────────────────────────────────────────────────────────────────────
 
+_DOCX_IMG_MIN_BYTES = 5_000          # sotto: icone, punti elenco, firme minuscole
+_DOCX_IMG_MAX_PER_DOC = 8
+_DOCX_IMG_TYPES = ("image/png", "image/jpeg", "image/jpg", "image/tiff", "image/bmp", "image/gif")
+
+
+def _extract_docx_ordered(raw: bytes) -> str:
+    """Piano motore Fase 1 (READ_DOCX_IMAGES) — DOCX nell'ordine reale del corpo,
+    con le immagini lette via OCR al loro posto.
+
+    Banco Box: organigramma e mappa dei processi erano immagini dentro il
+    manuale; il testo storico (paragrafi, poi tabelle) non li vedeva e il
+    motore li dichiarava assenti in tutte e tre le norme. Solo il corpo del
+    documento: intestazioni/piè di pagina (loghi) e miniatura di anteprima
+    restano fuori.
+    """
+    import hashlib
+    import docx  # type: ignore
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+    from compliance.azure_ocr import ocr_image_bytes
+
+    doc = docx.Document(io.BytesIO(raw))
+    seen: set = set()
+    budget = [_DOCX_IMG_MAX_PER_DOC]
+
+    def _images(el) -> List[str]:
+        out: List[str] = []
+        for rid in el.xpath(".//a:blip/@r:embed"):
+            part = doc.part.related_parts.get(rid)
+            if part is None or getattr(part, "content_type", "") not in _DOCX_IMG_TYPES:
+                continue
+            blob = part.blob
+            digest = hashlib.sha1(blob).hexdigest()
+            if len(blob) < _DOCX_IMG_MIN_BYTES or digest in seen or budget[0] <= 0:
+                continue
+            seen.add(digest)
+            budget[0] -= 1
+            name = str(part.partname).rsplit("/", 1)[-1]
+            text = (ocr_image_bytes(blob, filename=name) or "").strip()
+            out.append(f'[IMAGE "{name}"]\n{text}\n[/IMAGE]' if text
+                       else f'[IMAGE "{name}" - no readable text]')
+        return out
+
+    parts: List[str] = []
+    for child in doc.element.body.iterchildren():
+        tag = child.tag.rsplit("}", 1)[-1]
+        if tag == "p":
+            parts.append(Paragraph(child, doc).text)
+            parts += _images(child)
+        elif tag == "tbl":
+            for row in Table(child, doc).rows:
+                cells: List[str] = []
+                for c in row.cells:
+                    t = c.text.strip()
+                    if t and (not cells or cells[-1] != t):    # celle unite ripetute
+                        cells.append(t)
+                if cells:
+                    parts.append(" | ".join(cells))
+            parts += _images(child)
+    return "\n".join(parts)
+
+
+def _docx_header_footer_lines(raw: bytes) -> List[str]:
+    """Piano motore Fase 1 (READ_DOCX_HEADERS) — testo di intestazioni e piè di
+    pagina, una volta sola, in testa al documento.
+
+    Banco Box: 23 Word su 49 portano lì codice, versione e data del documento
+    ("QHSE Policy – Version 1 – 10/1/26") o il modello usato; il corpo non lo
+    ripete e il motore giudicava il controllo dei documenti senza vederlo.
+    Solo testo: i loghi restano fuori.
+    """
+    import docx  # type: ignore
+    doc = docx.Document(io.BytesIO(raw))
+    out: List[str] = []
+
+    def _text(part) -> str:
+        bits = [p.text.strip() for p in part.paragraphs if p.text.strip()]
+        for t in part.tables:
+            for row in t.rows:
+                cells: List[str] = []
+                for c in row.cells:
+                    ct = c.text.strip()
+                    if ct and (not cells or cells[-1] != ct):
+                        cells.append(ct)
+                if cells:
+                    bits.append(" | ".join(cells))
+        return " / ".join(bits)
+
+    for s in doc.sections:
+        for label, names in (("HEADER", ("first_page_header", "header", "even_page_header")),
+                             ("FOOTER", ("first_page_footer", "footer", "even_page_footer"))):
+            for n in names:
+                try:
+                    part = getattr(s, n)
+                    if part.is_linked_to_previous:
+                        continue
+                    line = f"[{label}] {_text(part)}"
+                except Exception:
+                    continue
+                if len(line) > len(label) + 3 and line not in out:
+                    out.append(line[:600])
+    return out
+
+
 def _extract_docx_bytes(raw: bytes) -> str:
     """DOCX (paragrafi + tabelle). Output INVARIATO rispetto al branch storico."""
+    from compliance import features
+    if features.on("READ_DOCX_HEADERS"):
+        try:
+            head = _docx_header_footer_lines(raw)
+        except Exception as e:
+            _log.warning("[Phase 1] intestazioni docx non lette: %s", e)
+            head = []
+        body = _extract_docx_body(raw)
+        return ("\n".join(head) + "\n" + body) if head and body else body
+    return _extract_docx_body(raw)
+
+
+def _extract_docx_body(raw: bytes) -> str:
+    from compliance import features
+    if features.on("READ_DOCX_IMAGES"):
+        try:
+            return _extract_docx_ordered(raw)
+        except Exception as e:
+            _log.warning("[Phase 1] docx ordinato/OCR fallito, ripiego sullo storico: %s", e)
     try:
         import io
         import docx  # type: ignore

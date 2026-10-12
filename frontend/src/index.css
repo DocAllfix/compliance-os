@@ -347,6 +347,8 @@ ul, ol { list-style: none; }
 .badge-minor { background: var(--severity-minor-bg); color: var(--severity-minor); }
 .badge-obs   { background: var(--severity-observation-bg); color: var(--severity-observation); }
 .badge-conf  { background: var(--severity-conformant-bg); color: var(--severity-conformant); }
+/* Not a severity: an item the analysis could not confirm either way. */
+.badge-neutral { background: var(--bg-sunken); color: var(--text-secondary); }
 
 .dot {
   display: inline-block;

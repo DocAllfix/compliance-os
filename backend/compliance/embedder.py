@@ -317,6 +317,7 @@ class EvidenceEmbedder:
                     "confidence":        float(card.get("confidence", 0.5) or 0.5),
                     # ChromaDB metadata must be scalar — serialise page list.
                     "pages":             ",".join(str(p) for p in chunk["pages"]),
+                    **_fact_meta(card),
                 })
 
         # 2) Summary chunks from cards (English bridge + LLM-derived signal)
@@ -336,6 +337,7 @@ class EvidenceEmbedder:
                 "gap_signal":        str(card.get("gap_signal", False)).lower(),
                 "confidence":        float(card.get("confidence", 0.5) or 0.5),
                 "pages":             _first_excerpt_pages(card),
+                **_fact_meta(card),
             })
 
         if not ids:
@@ -435,6 +437,12 @@ class EvidenceEmbedder:
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────────────────────────────────────
+
+def _fact_meta(card: Dict[str, Any]) -> Dict[str, str]:
+    """Piano motore Fase 3 (FACT_MODEL): chi ha emesso il documento e il dominio,
+    dichiarati dalla scheda, viaggiano con ogni frammento fino allo Stage A."""
+    return {k: str(card.get(k) or "") for k in ("issuer", "issuer_name", "domain")}
+
 
 def _safe_collection_name(analysis_id: str) -> str:
     """

@@ -11,6 +11,9 @@ class CompanyContext(BaseModel):
     certified: str       # "yes" / "no" / "in_progress"
     sites_count: str     # "1" / "2-5" / "5+"
     norms: List[str]     # ["ISO 9001", "ISO 14001", "ISO 45001"]
+    # Piano motore Fase 2: paese in cui opera l'organizzazione ("United Kingdom",
+    # "Italy", …). Decide quali obblighi nazionali si applicano (jurisdiction.py).
+    country: Optional[str] = None
 
 
 class TraceabilityLink(BaseModel):
@@ -38,11 +41,20 @@ class RemediationPlan(BaseModel):
 class RequirementCheck(BaseModel):
     """Sprint R4 — one atomic requirement verified by the deep pass."""
     requirement_id: str            # e.g. "9001_9_3.inputs.complete"
-    status: str                    # PRESENT / PARTIAL / ABSENT
+    status: str                    # PRESENT / PARTIAL / ABSENT / CONTRADICTED (Fase 2)
+    requirement_text: Optional[str] = None   # testo del requisito (UK English) per report e UI
     evidence_quote: Optional[str] = None   # verbatim quote supporting the status
     pages: List[int] = []
     file_name: Optional[str] = None
     note: Optional[str] = None     # e.g. "resource adequacy not discussed"
+    # Piano motore Fase 2: un ABSENT vale come prova solo dopo la ricerca
+    # esaustiva nell'intero pacco (searched=True); search_note dice dove si è
+    # cercato, così il cliente vede la base dell'affermazione.
+    searched: bool = False
+    search_note: Optional[str] = None
+    # Stato CONTRADICTED (Fase 2): il passaggio che smentisce evidence_quote.
+    counter_quote: Optional[str] = None
+    counter_file_name: Optional[str] = None
 
 
 class ClauseGap(BaseModel):
@@ -60,6 +72,10 @@ class ClauseGap(BaseModel):
     hedged: bool = False                        # True when evidence ambiguous
     hedge_note: Optional[str] = None
     deep_verified: bool = False                 # True when Stage B ran
+    # Piano motore Fase 2 (SEVERITY_RULES): requisiti che il motore non ha
+    # trovato ma non ha potuto dimostrare assenti nel pacco. Non sono non
+    # conformità: sono punti da verificare (UK English, testo per il manager).
+    to_verify: List[str] = []
 
 
 class NormGapReport(BaseModel):
@@ -197,3 +213,5 @@ class ComplianceAnalysisResult(BaseModel):
     documented_info_report: Optional[DocumentedInfoReport] = None  # Phase 2.6 (Sprint R3)
     cross_clause_findings: List[CrossClauseFinding] = []           # Phase 3.5 (Sprint R5)
     risk_register_extract: Optional[RiskRegisterExtract] = None    # Phase 2.7 (Sprint R8, P2)
+    # Piano motore Fase 4: l'organizzazione contro sé stessa (dichiarazioni ↔ registrazioni)
+    self_checks: List[dict] = []

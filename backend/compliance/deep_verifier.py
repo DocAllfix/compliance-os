@@ -55,6 +55,18 @@ DEEP_CONFIDENCE_THRESHOLD = 0.6   # Stage A confidence below this → deep pass
 _PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "compliance" / "deep_verification.md"
 
 
+def _output_budget(clause: Dict[str, Any]) -> int:
+    """Token di uscita: un controllo per requisito. Con la KB v2 una clausola può
+    avere fino a ~35 requisiti (9001 §8.3): 3000 token troncavano il JSON.
+    Senza KB v2 la richiesta resta identica a quella storica: anche solo un tetto
+    diverso cambia l'esito a parità di seed (accettazione 12/10: §9.3 instabile)."""
+    from compliance import features
+    if not (features.on("KB_V2") or features.on("KB_V2_FILL")):
+        return DEEP_MAX_OUTPUT_TOKENS
+    n = len(clause.get("atomic_requirements") or [])
+    return max(DEEP_MAX_OUTPUT_TOKENS, min(9000, 900 + 160 * n))
+
+
 def _sample_long_doc(text: str, cap: int = DEEP_MAX_DOC_CHARS) -> str:
     """Hardening 2026 (raffinamento) — testa+coda per i documenti molto lunghi.
 
@@ -64,14 +76,9 @@ def _sample_long_doc(text: str, cap: int = DEEP_MAX_DOC_CHARS) -> str:
     testa (60%) + coda (40%) con un marcatore, così l'intero arco del documento
     informa la verifica. I doc sotto il cap restano integri.
     """
-    text = text or ""
-    if len(text) <= cap:
-        return text
-    head = int(cap * 0.6)
-    tail = cap - head
-    return (text[:head].rstrip()
-            + "\n\n[… omitted middle section — head and tail shown …]\n\n"
-            + text[-tail:].lstrip())
+    # Piano motore Fase 1: con READ_SHEET_SAMPLING ripartizione per foglio.
+    from compliance.sampling import for_deep
+    return for_deep(text, cap)
 
 
 # ── Selection ─────────────────────────────────────────────────────────────────
@@ -196,6 +203,16 @@ def run_deep_verification(
         return gaps
 
     system_prompt = prompt_template.replace("{company_context}", context_block)
+    from compliance import features
+    if features.on("CONTRADICTION_STATUS"):
+        system_prompt += _CONTRADICTION_ADDENDUM
+    # Piano motore Fase 3 (FACT_MODEL): chi ha emesso ogni documento letto.
+    doc_tags: Dict[str, str] = {}
+    if features.on("FACT_MODEL"):
+        from compliance.facts import EVIDENCE_PROVENANCE_RULE, build as _build_facts
+        system_prompt += EVIDENCE_PROVENANCE_RULE
+        _facts = _build_facts(list(cards_by_id.values()))
+        doc_tags = {k: _facts.tag(k) for k in docs_by_name if _facts.tag(k)}
 
     # Map evidence_id → file name and build the file-name lookup used to
     # resolve citations back to evidence ids.
@@ -232,6 +249,7 @@ def run_deep_verification(
                 llm_call=llm_call,
                 risk_register_text=risk_register_text,
                 tagged_docs=(tagged_docs_by_clause or {}).get(gap.clause_id, []),
+                doc_tags=doc_tags,
             )
             if new_gap is not None:
                 gaps[idx] = _apply_partial_credit(apply_floor(new_gap, clause, []))
@@ -263,12 +281,13 @@ def _deep_verify_clause(
     llm_call: Callable,
     risk_register_text: str = "",
     tagged_docs: Optional[List[str]] = None,
+    doc_tags: Optional[Dict[str, str]] = None,
 ) -> Optional[ClauseGap]:
     doc_names = _select_documents(clause, gap, docs_by_name, evidence_service, tagged_docs)
     if not doc_names:
         return None  # nothing to read in full — keep Stage A verdict
 
-    user_prompt = _build_user_prompt(clause, gap, doc_names, docs_by_name)
+    user_prompt = _build_user_prompt(clause, gap, doc_names, docs_by_name, doc_tags)
 
     # Sprint R8 (P2) — risk-planning clauses also receive the structured
     # register extracted in Phase 2.7, so "criteria applied vs declared" is
@@ -280,7 +299,7 @@ def _deep_verify_clause(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        DEEP_MAX_OUTPUT_TOKENS,
+        _output_budget(clause),
     )
 
     data = _parse_json(raw)
@@ -291,7 +310,7 @@ def _deep_verify_clause(
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            DEEP_MAX_OUTPUT_TOKENS,
+            _output_budget(clause),
         )
         data = _parse_json(raw)
         if data is None:
@@ -299,7 +318,14 @@ def _deep_verify_clause(
                          clause.get("id"))
             return None
 
-    return _merge_verdict(clause, gap, data, doc_names, fname_to_eid)
+    merged = _merge_verdict(clause, gap, data, doc_names, fname_to_eid, docs_by_name)
+    # Piano motore Fase 2 (ABSENCE_SEARCH): ogni requisito ABSENT si cerca nel
+    # testo completo di tutto il pacco prima di valere come prova di assenza.
+    from compliance import features
+    if features.on("ABSENCE_SEARCH"):
+        from compliance.absence_search import resolve_absences
+        merged = resolve_absences(merged, clause, docs_by_name, evidence_service, llm_call, fname_to_eid)
+    return merged
 
 
 def _select_documents(
@@ -354,6 +380,7 @@ def _build_user_prompt(
     gap: ClauseGap,
     doc_names: List[str],
     docs_by_name: Dict[str, str],
+    doc_tags: Optional[Dict[str, str]] = None,
 ) -> str:
     parts: List[str] = [
         f"## Clause to verify: {clause['id']}",
@@ -396,7 +423,8 @@ def _build_user_prompt(
     ]
     for key in doc_names:
         text = _sample_long_doc(docs_by_name.get(key, ""), DEEP_MAX_DOC_CHARS)
-        parts.append(f"### DOCUMENT: {key}")
+        tag = (doc_tags or {}).get(key)
+        parts.append(f"### DOCUMENT: {key}" + (f"  [{tag}]" if tag else ""))
         parts.append(text)
         parts.append("")
 
@@ -407,7 +435,31 @@ def _build_user_prompt(
 # ── Verdict merge ─────────────────────────────────────────────────────────────
 
 _VALID_SEVERITIES = ("MAJOR", "MINOR", "OBSERVATION", "CONFORMANT")
-_VALID_CHECK_STATUS = ("PRESENT", "PARTIAL", "ABSENT")
+_VALID_CHECK_STATUS = ("PRESENT", "PARTIAL", "ABSENT", "CONTRADICTED")
+
+# Piano motore Fase 2 (CONTRADICTION_STATUS) — la violazione provata. Prima
+# esistevano solo presente/parziale/assente: una contraddizione documentata
+# (registro "superato" contro certificato "fallito") non aveva un posto e
+# finiva come PARTIAL, con gravità più bassa di una semplice assenza.
+_CONTRADICTION_ADDENDUM = """
+
+## Additional status: CONTRADICTED
+
+Use `CONTRADICTED` when the documents provided show that the requirement is NOT met because two
+passages contradict each other or a record shows a violation — for example a register lists an
+instrument as passed while its certificate says it failed; minutes state a target different from the
+objectives document; a procedure states a number of items different from the plan; a log shows an
+action still open after its due date. A CONTRADICTED check MUST carry `evidence_quote` + `file_name`
+(the first passage) AND `counter_quote` + `counter_file_name` (the passage that contradicts it), both
+copied verbatim from the documents provided. Do not use CONTRADICTED for something that is simply
+missing: that is ABSENT.
+"""
+
+
+def _quote_in(quote: Any, text: str) -> bool:
+    q = re.sub(r"\s+", " ", str(quote or "")).strip().lower().strip(" .\"'…")
+    t = re.sub(r"\s+", " ", text or "").lower()
+    return len(q) >= 8 and (q in t or q[:60] in t)
 
 
 def _merge_verdict(
@@ -416,6 +468,7 @@ def _merge_verdict(
     data: Dict[str, Any],
     doc_names: List[str],
     fname_to_eid: Dict[str, str],
+    docs_by_name: Optional[Dict[str, str]] = None,
 ) -> ClauseGap:
     """Build the deep-verified ClauseGap, citing only the documents provided."""
     severity = str(data.get("severity", "")).upper()
@@ -456,6 +509,26 @@ def _merge_verdict(
         req_id = str(item.get("requirement_id", "") or f"{clause['id']}.unnamed")
         note = str(item.get("note"))[:200] if item.get("note") else None
 
+        # Fase 2 (CONTRADICTION_STATUS) — cite-or-fail su ENTRAMBI i passaggi:
+        # una contraddizione vale come prova solo se le due citazioni si
+        # ritrovano nei documenti forniti; altrimenti decade a PARTIAL.
+        counter_quote, counter_file = None, None
+        if status == "CONTRADICTED":
+            from compliance import features
+            cf = item.get("counter_file_name")
+            ckey = _norm_name(str(cf)) if cf else None
+            texts = docs_by_name or {}
+            verified = (features.on("CONTRADICTION_STATUS") and fkey in valid_keys and ckey in valid_keys
+                        and _quote_in(quote, texts.get(fkey, ""))
+                        and _quote_in(item.get("counter_quote"), texts.get(ckey, "")))
+            if verified:
+                counter_quote, counter_file = str(item.get("counter_quote"))[:300], str(cf)
+            else:
+                _log.warning("[Deep] %s: %s CONTRADICTED non verificabile — PARTIAL", clause.get("id"), req_id)
+                status = "PARTIAL"
+                note = ("A contradiction was reported but could not be verified in the documents — "
+                        "review the documents directly.")
+
         # Sprint R7 — deterministic wording verification. The LLM can be
         # confidently wrong here (observed: improvement commitment marked
         # PRESENT quoting the objectives-framework sentence). When the
@@ -487,10 +560,13 @@ def _merge_verdict(
         checks.append(RequirementCheck(
             requirement_id=req_id,
             status=status,
+            requirement_text=(str(requirement.get("text"))[:300] if requirement else None),
             evidence_quote=(str(quote)[:300] if quote else None),
             pages=pages,
             file_name=(str(fname) if fname else None),
             note=note,
+            counter_quote=counter_quote,
+            counter_file_name=counter_file,
         ))
 
     # Severity re-derivation after wording downgrades. The verifier caught the
@@ -522,18 +598,22 @@ def _merge_verdict(
     for chk in checks:
         if chk.status == "ABSENT" or not chk.file_name:
             continue
-        fkey = _norm_name(chk.file_name)
-        if fkey in seen_files:
-            continue
-        seen_files.add(fkey)
-        sources.append(TraceabilityLink(
-            evidence_id=fname_to_eid.get(fkey, f"doc::{fkey}"),
-            file_name=chk.file_name,
-            pages=chk.pages,
-            excerpt=(chk.evidence_quote or "")[:280],
-            relevance_score=confidence if confidence is not None else 0.7,
-            summary=None,
-        ))
+        cited = [(chk.file_name, chk.evidence_quote, chk.pages)]
+        if chk.counter_file_name:      # contraddizione: entrambi i documenti sono fonti
+            cited.append((chk.counter_file_name, chk.counter_quote, []))
+        for fname_c, quote_c, pages_c in cited:
+            fkey = _norm_name(fname_c)
+            if fkey in seen_files:
+                continue
+            seen_files.add(fkey)
+            sources.append(TraceabilityLink(
+                evidence_id=fname_to_eid.get(fkey, f"doc::{fkey}"),
+                file_name=fname_c,
+                pages=pages_c,
+                excerpt=(quote_c or "")[:280],
+                relevance_score=confidence if confidence is not None else 0.7,
+                summary=None,
+            ))
     # Hardening 2026 #6 — fonti oneste: ripieghiamo sulle citazioni Stage A SOLO se
     # la deep-verification non ha prodotto alcun check (Stage B non ha potuto
     # giudicare). Se invece i check esistono e sono TUTTI ABSENT, è un'assenza

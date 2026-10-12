@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import io
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -80,6 +80,44 @@ SEVERITY_HEX = {
     "OBSERVATION": "CA8A04",
     "CONFORMANT":  "16A34A",
 }
+
+
+# ── Piano motore Fase 2 — natura del rilievo (richiesta dell'auditor) ────────
+# Il report dice su cosa si regge ogni verdetto: una contraddizione tra due
+# documenti, un'assenza confermata dalla ricerca su tutto il pacco, un
+# requisito soddisfatto in parte, o un punto non confermato da verificare.
+
+def _check_label(chk: Any) -> str:
+    if chk.status == "CONTRADICTED":
+        return "Contradicted"
+    if chk.status == "ABSENT":
+        return "Not found (whole pack searched)" if getattr(chk, "searched", False) else "To verify"
+    return {"PRESENT": "Met", "PARTIAL": "Partly met"}.get(chk.status, chk.status)
+
+
+def _finding_basis(gap: ClauseGap) -> str:
+    checks = gap.requirement_checks or []
+    if any(c.status == "CONTRADICTED" for c in checks):
+        return "Contradiction"
+    if any(c.status == "ABSENT" and getattr(c, "searched", False) for c in checks):
+        return "Not found (pack searched)"
+    if any(c.status == "PARTIAL" for c in checks):
+        return "Partly met"
+    if gap.to_verify:
+        return "To verify"
+    if gap.severity == "CONFORMANT":
+        return "Met"
+    return "Requirements checked" if checks else "Screening"
+
+
+def _uses_evidence_rules(result: ComplianceAnalysisResult) -> bool:
+    """Analisi prodotta con le regole della Fase 2 (layout del report esteso)."""
+    for nr in result.norms:
+        for g in nr.clauses:
+            if g.to_verify or any(getattr(c, "searched", False) or c.status == "CONTRADICTED"
+                                  for c in g.requirement_checks or []):
+                return True
+    return False
 
 
 # ── Public entry point ────────────────────────────────────────────────────────
@@ -163,6 +201,10 @@ def build_docx_report(
         toc_entries.append(f"§6D  Clause Matrix — {nr.norm}")
     if dismissed_rows:
         toc_entries.append("§6E  Set-aside Findings")
+    if any(g.to_verify for nr in result.norms for g in nr.clauses):
+        toc_entries.append("§6F  Points to Verify")
+    if getattr(result, "self_checks", None):
+        toc_entries.append("§6G  Own Records Check")
     toc_entries.append("§7  Methodology & Disclaimer")
     _add_toc(doc, toc_entries)
     doc.add_page_break()
@@ -236,8 +278,19 @@ def build_docx_report(
         _add_manual_ncs_section(doc, manual_ncs)
         doc.add_page_break()
 
+    with_basis = _uses_evidence_rules(result)
     for norm_report in result.norms:
-        _add_clause_matrix(doc, norm_report, dismissed_ids)
+        _add_clause_matrix(doc, norm_report, dismissed_ids, with_basis=with_basis)
+        doc.add_page_break()
+
+    # Piano motore Fase 2: punti non confermati — da verificare, non NC.
+    if any(g.to_verify for nr in result.norms for g in nr.clauses):
+        _add_points_to_verify(doc, result)
+        doc.add_page_break()
+
+    # Piano motore Fase 4: l'organizzazione contro sé stessa.
+    if getattr(result, "self_checks", None):
+        _add_own_records_section(doc, result.self_checks)
         doc.add_page_break()
 
     # §6c Set-aside findings (Fase 4 — dismissed, con motivazione)
@@ -505,12 +558,19 @@ def _add_critical_findings(
             add_row("Caution", gap.hedge_note, C_GREY)
         # Sprint R6 — per-requirement verification from the deep pass
         if gap.requirement_checks:
+            add_row("Basis", _finding_basis(gap))
             checks_str = "\n".join(
-                f"[{chk.status}] {chk.requirement_id.split('.', 1)[-1].replace('_', ' ')}"
+                f"[{_check_label(chk)}] "
+                + (chk.requirement_text or chk.requirement_id.split('.', 1)[-1].replace('_', ' '))
                 + (f" — {chk.note}" if chk.note else "")
+                + (f" ({chk.file_name}: “{chk.evidence_quote}” vs {chk.counter_file_name}: “{chk.counter_quote}”)"
+                   if chk.status == "CONTRADICTED" and chk.counter_quote else "")
+                + (f" — {chk.search_note}" if chk.search_note and chk.status == "ABSENT" else "")
                 for chk in gap.requirement_checks
             )
             add_row("Checks", checks_str)
+        if gap.to_verify:
+            add_row("To verify", "\n".join(f"• {t}" for t in gap.to_verify))
         if gap.sources:
             sources_str = "; ".join(
                 f"{s.file_name}{', p.' + str(s.pages[0]) if s.pages else ''}"
@@ -588,18 +648,24 @@ def _add_action_plan(
 # ── Full Clause Matrix ────────────────────────────────────────────────────────
 
 def _add_clause_matrix(
-    doc: Document, norm: NormGapReport, dismissed_ids: set | None = None
+    doc: Document, norm: NormGapReport, dismissed_ids: set | None = None, with_basis: bool = False
 ) -> None:
     _h1(doc, f"§6D  Clause Matrix — {norm.norm}")
     dismissed_ids = dismissed_ids or set()
 
     # 2026-07: colonna Confidence — dato chiave per leggere i verdetti
     # borderline (i flip tra run stanno sotto ~0.85; i MAJOR stabili a 0.95+).
-    table = doc.add_table(rows=1, cols=5)
+    # Piano motore Fase 2: colonna Basis (natura del rilievo) quando l'analisi
+    # usa le regole sulle prove; altrimenti layout invariato.
+    headers = ["Clause", "Title", "Score", "Severity", "Confidence"] + (["Basis"] if with_basis else [])
+    table = doc.add_table(rows=1, cols=len(headers))
     table.style = "Table Grid"
-    _set_col_widths(table, [Inches(1.2), Inches(2.5), Inches(0.6), Inches(1.4), Inches(0.8)])
+    widths = [Inches(1.2), Inches(2.5), Inches(0.6), Inches(1.4), Inches(0.8)]
+    if with_basis:
+        widths = [Inches(1.0), Inches(2.0), Inches(0.5), Inches(1.2), Inches(0.7), Inches(1.3)]
+    _set_col_widths(table, widths)
 
-    for i, h in enumerate(["Clause", "Title", "Score", "Severity", "Confidence"]):
+    for i, h in enumerate(headers):
         cell = table.rows[0].cells[i]
         cell.text = h
         p = cell.paragraphs[0]
@@ -627,6 +693,8 @@ def _add_clause_matrix(
         row.cells[4].text = (
             f"{round(gap.confidence * 100)}%" if gap.confidence is not None else "—"
         )
+        if with_basis:
+            row.cells[5].text = _finding_basis(gap)
 
         color = C_GREY if set_aside else SEVERITY_COLOR.get(gap.severity, C_DARK)
         for cell in row.cells:
@@ -647,6 +715,74 @@ def _add_clause_matrix(
             bg = "FEF2F2" if gap.severity == "MAJOR" else "FFF7ED" if gap.severity == "MINOR" else "F8FAFC" if i % 2 == 0 else "FFFFFF"
         for cell in row.cells:
             _set_cell_bg(cell, bg)
+
+
+def _add_own_records_section(doc: Document, checks: List[dict]) -> None:
+    """Piano motore Fase 4 — l'organizzazione contro sé stessa: ciò che i suoi
+    registri, procedure e verbali dichiarano, confrontato con le registrazioni."""
+    _h1(doc, "§6G  Own Records Check")
+    p = doc.add_paragraph(
+        "What the organisation's own registers, procedures and minutes state, checked against the records in "
+        "the document pack. Inconsistencies and missing records are evidence-based; points marked 'To verify' "
+        "could not be confirmed either way.")
+    p.runs[0].font.size = Pt(9)
+    p.runs[0].font.color.rgb = C_GREY
+    table = doc.add_table(rows=1, cols=4)
+    table.style = "Table Grid"
+    _set_col_widths(table, [Inches(1.0), Inches(3.3), Inches(1.4), Inches(0.8)])
+    for i, h in enumerate(["Result", "What was checked", "Documents", "Clause"]):
+        cell = table.rows[0].cells[i]
+        cell.text = h
+        cell.paragraphs[0].runs[0].font.bold = True
+        cell.paragraphs[0].runs[0].font.size = Pt(9)
+        cell.paragraphs[0].runs[0].font.color.rgb = C_WHITE
+        _set_cell_bg(cell, "1B2944")
+    label = {"INCONSISTENT": "Inconsistent", "MISSING": "Missing record", "TO_VERIFY": "To verify"}
+    order = {"INCONSISTENT": 0, "MISSING": 1, "TO_VERIFY": 2}
+    for c in sorted((c for c in checks if c.get("status") in label), key=lambda c: order[c["status"]]):
+        row = table.add_row()
+        row.cells[0].text = label[c["status"]]
+        row.cells[1].text = str(c.get("description", ""))
+        row.cells[2].text = "; ".join(sorted({str(x.get("file_name", "")).replace("\\", "/").rsplit("/", 1)[-1]
+                                              for x in c.get("cites") or [] if x.get("file_name")}))
+        row.cells[3].text = _clause_display(str(c.get("attached_to", "")).split(" ")[-1]) if c.get("attached_to") else "—"
+        for cell in row.cells:
+            for run in cell.paragraphs[0].runs:
+                run.font.size = Pt(9)
+        if c["status"] != "TO_VERIFY":
+            row.cells[0].paragraphs[0].runs[0].font.color.rgb = C_MINOR
+
+
+def _add_points_to_verify(doc: Document, result: ComplianceAnalysisResult) -> None:
+    """Piano motore Fase 2 — ciò che il motore non ha trovato ma non ha potuto
+    dimostrare assente: una lista di controllo per il manager, non accuse."""
+    _h1(doc, "§6F  Points to Verify")
+    p = doc.add_paragraph(
+        "These items were not found in the documents analysed, but the analysis could not confirm that "
+        "they are missing. They are not nonconformities: check whether each one is in place and, if so, "
+        "add the evidence to the document pack before the next review.")
+    p.runs[0].font.size = Pt(9)
+    p.runs[0].font.color.rgb = C_GREY
+    table = doc.add_table(rows=1, cols=3)
+    table.style = "Table Grid"
+    _set_col_widths(table, [Inches(1.0), Inches(2.0), Inches(3.5)])
+    for i, h in enumerate(["Standard", "Clause", "Point to verify"]):
+        cell = table.rows[0].cells[i]
+        cell.text = h
+        cell.paragraphs[0].runs[0].font.bold = True
+        cell.paragraphs[0].runs[0].font.size = Pt(9)
+        cell.paragraphs[0].runs[0].font.color.rgb = C_WHITE
+        _set_cell_bg(cell, "1B2944")
+    for nr in result.norms:
+        for g in nr.clauses:
+            for item in g.to_verify:
+                row = table.add_row()
+                row.cells[0].text = _short_norm(nr.norm)
+                row.cells[1].text = g.clause_title
+                row.cells[2].text = item
+                for cell in row.cells:
+                    for run in cell.paragraphs[0].runs:
+                        run.font.size = Pt(9)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

@@ -215,6 +215,12 @@ def _extract_evidence(
 
     context_block = build_context_prompt_block(company_context)
     system_prompt = prompt_template.replace("{company_context}", context_block)
+    # Piano motore Fase 3 (FACT_MODEL): la scheda dichiara chi ha emesso il
+    # documento, dominio, codice, versione e persone (compliance/facts.py).
+    from compliance import features as _features
+    if _features.on("FACT_MODEL"):
+        from compliance.facts import CARD_FACTS_ADDENDUM
+        system_prompt += CARD_FACTS_ADDENDUM
 
     total = len(docs)
     if total == 0:
@@ -223,13 +229,31 @@ def _extract_evidence(
     # Lazy single-client construction so all workers reuse one Azure SDK instance.
     azure_client = _build_evidence_azure_client()
 
+    # Piano motore, Fase 0 — schede salvate e riusate (EVIDENCE_CARD_CACHE=1,
+    # spento di default). Un documento già schedato con la stessa domanda al
+    # modello riusa la sua scheda; al modello vanno solo gli altri.
+    from compliance import card_cache
+    cached_parts: List[str] = []
+    to_extract = docs
+    card_keys: Dict[int, str] = {}
+    if card_cache.enabled():
+        deployment = getattr(azure_client, "deployment", "") or ""
+        for d in docs:
+            card_keys[id(d)] = card_cache.key_for(
+                system_prompt, deployment, d.get("filename", ""),
+                _sample_doc_text(d.get("content") or "", EVIDENCE_DOC_CHAR_CAP))
+        hits = {id(d): card_cache.get(card_keys[id(d)]) for d in docs}
+        cached_parts = [hits[id(d)] for d in docs if hits[id(d)]]
+        to_extract = [d for d in docs if not hits[id(d)]]
+        emit(20.0, f"Evidence cards reused from cache: {len(cached_parts)}/{total}.")
+
     # Build batches preserving original document order.
     batches: List[List[Dict[str, Any]]] = [
-        docs[i : i + EVIDENCE_BATCH_SIZE]
-        for i in range(0, total, EVIDENCE_BATCH_SIZE)
+        to_extract[i : i + EVIDENCE_BATCH_SIZE]
+        for i in range(0, len(to_extract), EVIDENCE_BATCH_SIZE)
     ]
 
-    emit(20.0, f"Running evidence extraction on {total} documents in {len(batches)} batches…")
+    emit(20.0, f"Running evidence extraction on {len(to_extract)} documents in {len(batches)} batches…")
 
     # Index → (raw_yaml_or_None, batch_docs)
     batch_results: Dict[int, Optional[str]] = {}
@@ -277,11 +301,13 @@ def _extract_evidence(
     # skips a card) and parse corruptions are caught by the FINAL reconciliation
     # below, which runs AFTER the global renumber (so it sees exactly what the
     # downstream parser will see).
-    parts: List[str] = []
+    parts: List[str] = list(cached_parts)
     for idx, batch in enumerate(batches):
         raw = batch_results.get(idx)
         if raw and raw.strip():
             parts.append(_strip_meta_block(raw))
+            if card_keys:
+                card_cache.store_batch(batch, _strip_meta_block(raw), lambda d: card_keys[id(d)])
         else:
             _log.warning(
                 "[Phase 2] Batch %d/%d returned empty — emitting %d synthetic cards",
@@ -415,14 +441,10 @@ def _sample_doc_text(content: str, cap: int = EVIDENCE_DOC_CHAR_CAP) -> str:
     prendiamo testa (60%) + coda (40%) con un marcatore di omissione, così la card
     riflette l'intero documento. (Lo Stage B continua a leggere il testo integrale.)
     """
-    content = content or ""
-    if len(content) <= cap:
-        return content
-    head = int(cap * 0.6)
-    tail = cap - head
-    return (content[:head].rstrip()
-            + "\n\n[… omitted middle section …]\n\n"
-            + content[-tail:].lstrip())
+    # Piano motore Fase 1: con READ_SHEET_SAMPLING le cartelle Excel ripartiscono
+    # lo spazio su tutti i fogli (compliance/sampling.py); altrimenti testa+coda.
+    from compliance.sampling import for_card
+    return for_card(content, cap)
 
 
 def _build_user_prompt_for_batch(batch_docs: List[Dict[str, Any]]) -> str:
@@ -861,11 +883,29 @@ def generate_executive_summary(
     # Sprint R8 — signatories from the evidence cards (Q9 `signed_by`), so the
     # prompt's key_roles rule can actually be satisfied. Before this fix the
     # compact JSON carried no signed_by at all and key_roles was unfillable.
+    # Piano motore Fase 3 (FACT_MODEL): i ruoli chiave vengono solo da documenti
+    # del cliente; chi compare solo su documenti esterni (certificati dei
+    # fornitori) non è personale del cliente (banco Box: errore F01).
+    from compliance import features as _features
+    facts = None
+    if _features.on("FACT_MODEL") and evidence_yaml.strip():
+        try:
+            from compliance.facts import build as _build_facts
+            from compliance.gap_analyzer import _parse_evidence_yaml as _pey
+            facts = _build_facts(_pey(evidence_yaml))
+            compact["client_people"] = [
+                {"name": p["name"], "role": p.get("role")}
+                for p in list((facts.key_people or facts.client_people).values())[:25]
+            ]
+        except Exception:
+            facts = None
     if evidence_yaml.strip():
         try:
             from compliance.gap_analyzer import _parse_evidence_yaml
             signatories = []
             for card in _parse_evidence_yaml(evidence_yaml):
+                if facts is not None and facts.is_external(str(card.get("file_name", ""))):
+                    continue
                 signer = str(card.get("signed_by") or "").strip()
                 if signer and signer.lower() not in ("null", "none", "unknown"):
                     signatories.append({
@@ -895,7 +935,9 @@ def generate_executive_summary(
         ]
 
     user_prompt = (
-        "## ComplianceAnalysisResult (compact JSON view)\n"
+        ("For key_roles use only `signatories` and `client_people` (people of the organisation itself).\n\n"
+         if facts is not None else "")
+        + "## ComplianceAnalysisResult (compact JSON view)\n"
         "```json\n"
         + _json.dumps(compact, ensure_ascii=False, indent=2)
         + "\n```\n\n"
@@ -906,50 +948,71 @@ def generate_executive_summary(
     # 2026-06-12). deep=True: l'executive summary è user-facing per Fred e
     # usa il profilo deep quando configurato. Su errore il summary viene
     # saltato e l'analisi resta valida (campo opzionale).
-    raw = ""
-    try:
-        from v2.azure_openai_client_v2 import make_client
-        client = make_client(deep=True)
-        stream = client.chat_stream(
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user",   "content": user_prompt},
-            ],
-            max_tokens=2500,
+    # Piano motore Fase 2 — sommario robusto: un errore transitorio (429,
+    # timeout, JSON troncato) faceva sparire l'intero sommario, ruoli chiave
+    # compresi (banco 12/10: 1 esecuzione su 2 senza sommario). Tre tentativi con attesa e
+    # parse tollerante (estrae l'oggetto JSON anche se c'è testo intorno).
+    for attempt in range(3):
+        if attempt:
+            time.sleep(8 * attempt)   # 429 sotto carico: le altre fasi hanno backoff, il sommario no
+        raw = ""
+        try:
+            from v2.azure_openai_client_v2 import make_client
+            client = make_client(deep=True)
+            stream = client.chat_stream(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user",   "content": user_prompt},
+                ],
+                max_tokens=3500,
+            )
+            chunks: List[str] = []
+            for chunk in stream:
+                choices = getattr(chunk, "choices", None) or []
+                if choices:
+                    delta = getattr(choices[0], "delta", None)
+                    content = getattr(delta, "content", None) if delta else None
+                    if content:
+                        chunks.append(content)
+            raw = "".join(chunks).strip()
+        except Exception as e:
+            logging.getLogger("compliance.pipeline").error(
+                f"Azure executive_summary failed (attempt {attempt + 1}/3): {e}"
+            )
+            continue
+        data = _parse_summary_json(raw)
+        if data is not None:
+            if facts is not None:
+                snap = data.get("company_snapshot")
+                if isinstance(snap, dict) and isinstance(snap.get("key_roles"), list):
+                    snap["key_roles"] = facts.filter_key_roles([str(r) for r in snap["key_roles"]])
+            return data
+        logging.getLogger("compliance.pipeline").warning(
+            f"executive_summary JSON parse failed (attempt {attempt + 1}/3) — raw[-200:]={raw[-200:]!r}"
         )
-        chunks: List[str] = []
-        for chunk in stream:
-            choices = getattr(chunk, "choices", None) or []
-            if choices:
-                delta = getattr(choices[0], "delta", None)
-                content = getattr(delta, "content", None) if delta else None
-                if content:
-                    chunks.append(content)
-        raw = "".join(chunks).strip()
-    except Exception as e:
-        logging.getLogger("compliance.pipeline").error(
-            f"Azure executive_summary failed — no fallback configured: {e}"
-        )
-        return None
+    return None
 
-    # Parse JSON (tolerate code fences)
-    text = raw.strip()
+
+def _parse_summary_json(raw: str) -> Optional[Dict[str, Any]]:
+    """JSON del sommario: tollera fence ```, testo prima/dopo l'oggetto e gli a capo
+    dentro le stringhe (il modello va a capo tra i paragrafi della narrativa: JSON
+    non valido in senso stretto — banco 12/10: sommario perso per tre tentativi di fila)."""
+    import json as _json
+    text = (raw or "").strip()
     if text.startswith("```"):
-        # strip first fence line
         nl = text.find("\n")
         if nl >= 0:
             text = text[nl + 1:]
         if text.rstrip().endswith("```"):
             text = text.rstrip()[:-3]
     text = text.strip()
-
-    try:
-        data = _json.loads(text)
-        if not isinstance(data, dict):
-            return None
-        return data
-    except Exception as e:
-        logging.getLogger("compliance.pipeline").warning(
-            f"executive_summary JSON parse failed: {e!s} — raw[:200]={raw[:200]!r}"
-        )
-        return None
+    for candidate in (text, text[text.find("{"): text.rfind("}") + 1] if "{" in text else ""):
+        if not candidate:
+            continue
+        try:
+            data = _json.loads(candidate, strict=False)
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            continue
+    return None

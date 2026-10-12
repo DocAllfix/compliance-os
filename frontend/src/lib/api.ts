@@ -68,6 +68,7 @@ export interface CompanyContext {
   certified: string;
   sites_count: string;
   norms: string[];
+  country?: string;
 }
 
 export interface TraceabilityLink {
@@ -95,11 +96,17 @@ export type ActionStatus = 'open' | 'in_progress' | 'closed';
 // Sprint R4 — one atomic requirement verified by the deep pass
 export interface RequirementCheck {
   requirement_id: string;
-  status: 'PRESENT' | 'PARTIAL' | 'ABSENT';
+  status: 'PRESENT' | 'PARTIAL' | 'ABSENT' | 'CONTRADICTED';
+  requirement_text?: string | null;
   evidence_quote?: string | null;
   pages: number[];
   file_name?: string | null;
   note?: string | null;
+  // Engine plan phase 2: an absence counts as evidence only after a whole-pack search
+  searched?: boolean;
+  search_note?: string | null;
+  counter_quote?: string | null;
+  counter_file_name?: string | null;
 }
 
 export interface ClauseGap {
@@ -118,6 +125,8 @@ export interface ClauseGap {
   hedged?: boolean;
   hedge_note?: string | null;
   deep_verified?: boolean;
+  // Engine plan phase 2 — items not found but not proven missing (not nonconformities)
+  to_verify?: string[];
   // Fase 4 — overlay dal registro NC (merge in lettura, PRD 1.4.8)
   dismissed?: boolean;
   dismiss_reason?: string | null;
@@ -216,6 +225,17 @@ export interface CrossClauseFinding {
   sources: TraceabilityLink[];
 }
 
+// Engine plan phases 4-5 — the organisation checked against its own records
+export interface SelfCheck {
+  kind: string;
+  status: 'INCONSISTENT' | 'MISSING' | 'TO_VERIFY' | 'CONSISTENT';
+  description: string;
+  clause?: string | null;
+  attached_to?: string | null;
+  cites: { file_name?: string | null; quote?: string | null }[];
+  person?: string | null;
+}
+
 // Fase A — Phase 2.7 structured risk register (Sprint R8)
 export interface RiskRegisterEntry {
   ref?: string | null;
@@ -258,6 +278,7 @@ export interface AnalysisResult {
   executive_summary?: ExecutiveSummary | null;    // Phase 4 (backend Sprint 4)
   documented_info_report?: DocumentedInfoReport | null;  // Phase 2.6 (Sprint R3)
   cross_clause_findings?: CrossClauseFinding[];          // Phase 3.5 (Sprint R5)
+  self_checks?: SelfCheck[];                             // engine plan phases 4-5
   risk_register_extract?: RiskRegisterExtract | null;    // Phase 2.7 (Sprint R8)
 }
 
@@ -684,6 +705,7 @@ export async function runAnalysis(
   form.append('certified', context.certified);
   form.append('sites_count', context.sites_count);
   form.append('norms', JSON.stringify(context.norms));
+  if (context.country) form.append('country', context.country);
 
   const before = await _snapshotAnalysisIds();
   const res = await fetch(`${BASE}/api/compliance/analyze`, {
@@ -720,6 +742,7 @@ export interface AnalyzeDmsRequest {
   certified: string;
   sites_count: string;
   norms: string[];
+  country?: string;
   scope: 'all' | 'folder' | 'updated_since';
   folder_id?: number | null;
   updated_since?: string | null;

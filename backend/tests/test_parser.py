@@ -102,3 +102,11 @@ def test_parser_skips_corrupted_card():
     # The corrupted middle card may or may not be parsed depending on yaml's
     # tolerance for the quote mismatch — we only require the good ones survive
     assert len(cards) >= 2
+
+
+def test_executive_summary_json_is_parsed_tolerantly():
+    # Piano motore Fase 2: fence, testo intorno; un JSON troncato resta None (→ secondo tentativo)
+    from compliance.pipeline import _parse_summary_json
+    assert _parse_summary_json('```json\n{"a": 1}\n```') == {"a": 1}
+    assert _parse_summary_json('Here it is: {"a": 2} done') == {"a": 2}
+    assert _parse_summary_json('{"a": ') is None

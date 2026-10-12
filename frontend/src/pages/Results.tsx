@@ -11,6 +11,7 @@ import { ExpiryTable } from '@/pages/results/ExpiryTable';
 import { PriorityIntegrationsList } from '@/pages/results/PriorityIntegrationsList';
 import { DocumentedInfoSection } from '@/pages/results/DocumentedInfoSection';
 import { CrossClauseSection } from '@/pages/results/CrossClauseSection';
+import { OwnRecordsSection } from '@/pages/results/OwnRecordsSection';
 import { RiskRegisterSection } from '@/pages/results/RiskRegisterSection';
 
 // Sprint G.1: Finding interface estesa con i dati REALI di ClauseGap
@@ -29,6 +30,7 @@ interface Finding {
   hedged: boolean;
   hedgeNote?: string | null;
   deepVerified: boolean;
+  toVerify: string[];
 }
 
 function mapClause(c: ClauseGap): Finding {
@@ -53,6 +55,7 @@ function mapClause(c: ClauseGap): Finding {
     hedged: c.hedged ?? false,
     hedgeNote: c.hedge_note,
     deepVerified: c.deep_verified ?? false,
+    toVerify: c.to_verify ?? [],
   };
 }
 
@@ -94,11 +97,14 @@ function effortLabel(effort: RemediationPlan['effort']): string {
   return 'Low';
 }
 
-function checkStatusBadge(status: RequirementCheck['status']) {
-  // Severity-semantic colours only: PRESENT=conformant, PARTIAL=minor, ABSENT=major
-  if (status === 'PRESENT') return <span className="badge badge-conf">Present</span>;
-  if (status === 'PARTIAL') return <span className="badge badge-minor">Partial</span>;
-  return <span className="badge badge-major">Absent</span>;
+function checkStatusBadge(chk: RequirementCheck) {
+  // Severity-semantic colours only. An absence that was not confirmed by a
+  // whole-pack search is not a gap: neutral "To verify", never red.
+  if (chk.status === 'PRESENT') return <span className="badge badge-conf">Met</span>;
+  if (chk.status === 'PARTIAL') return <span className="badge badge-minor">Partly met</span>;
+  if (chk.status === 'CONTRADICTED') return <span className="badge badge-major">Contradicted</span>;
+  if (chk.searched) return <span className="badge badge-major">Not found</span>;
+  return <span className="badge badge-neutral">To verify</span>;
 }
 
 function requirementLabel(id: string): string {
@@ -163,6 +169,18 @@ function FindingCard({ f, defaultExpanded = false }: { f: Finding; defaultExpand
         <div className="finding-detail">
           {/* Sprint R6: per-requirement verification checklist from the deep
               pass — PRESENT/PARTIAL/ABSENT with verbatim quote and page. */}
+          {/* Engine plan phase 2: items not found but not proven missing. */}
+          {f.toVerify.length > 0 && (
+            <div style={{ marginBottom: 16 }}>
+              <div className="remediation-header" style={{ marginBottom: 6 }}>Points to verify</div>
+              <p style={{ fontSize: 12, color: 'var(--text-secondary)', margin: '0 0 6px' }}>
+                Not found in the documents analysed, but not confirmed as missing. Check each point and add the evidence if it exists.
+              </p>
+              <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12.5 }}>
+                {f.toVerify.map((t) => <li key={t}>{t}</li>)}
+              </ul>
+            </div>
+          )}
           {f.requirementChecks.length > 0 && (
             <div style={{ marginBottom: 16 }}>
               <div className="remediation-header" style={{ marginBottom: 8 }}>
@@ -183,11 +201,24 @@ function FindingCard({ f, defaultExpanded = false }: { f: Finding; defaultExpand
                       fontSize: 12.5,
                     }}
                   >
-                    <div>{checkStatusBadge(chk.status)}</div>
+                    <div>{checkStatusBadge(chk)}</div>
                     <div>
-                      <span style={{ fontWeight: 600 }}>{requirementLabel(chk.requirement_id)}</span>
+                      <span style={{ fontWeight: 600 }}>{chk.requirement_text || requirementLabel(chk.requirement_id)}</span>
                       {chk.note && (
                         <span style={{ color: 'var(--text-secondary)' }}> — {chk.note}</span>
+                      )}
+                      {chk.status === 'ABSENT' && chk.search_note && (
+                        <div style={{ marginTop: 3, color: 'var(--text-tertiary)', fontSize: 11.5 }}>{chk.search_note}</div>
+                      )}
+                      {chk.status === 'CONTRADICTED' && chk.counter_quote && (
+                        <div style={{ marginTop: 3, fontFamily: 'var(--font-serif)', fontStyle: 'italic', color: 'var(--text-secondary)' }}>
+                          contradicted by “{chk.counter_quote}”
+                          {chk.counter_file_name && (
+                            <span style={{ fontFamily: 'var(--font-mono)', fontStyle: 'normal', fontSize: 11, color: 'var(--text-tertiary)' }}>
+                              {' '}[{lastPathSegment(chk.counter_file_name)}]
+                            </span>
+                          )}
+                        </div>
                       )}
                       {chk.evidence_quote && (
                         <div
@@ -597,6 +628,7 @@ export function Results() {
       {(result.cross_clause_findings?.length ?? 0) > 0 && (
         <CrossClauseSection findings={result.cross_clause_findings!} />
       )}
+      {(result.self_checks?.length ?? 0) > 0 && <OwnRecordsSection checks={result.self_checks!} />}
       {result.risk_register_extract && result.risk_register_extract.total_risks > 0 && (
         <RiskRegisterSection register={result.risk_register_extract} />
       )}
